@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::net::SocketAddr;
 use std::str::FromStr; 
-use tracing::{info, error};
+use tracing::{info, error, warn};
 use sentiric_sip_core::{
     SipPacket, HeaderName, Header, SipUri,
     builder::SipResponseFactory,
@@ -51,7 +51,6 @@ impl CallHandler {
         
         let caller_tag = from.split(";tag=").nth(1).unwrap_or("").to_string();
         let client_contact = req.get_header_value(HeaderName::Contact).cloned().unwrap_or_else(|| format!("<{}>", from));
-        
         let to_uri = SipUri::from_str(&to).unwrap_or_else(|_| SipUri::from_str("sip:unknown@sentiric.local").unwrap());
         let to_aor = to_uri.user.unwrap_or_default();
 
@@ -59,19 +58,14 @@ impl CallHandler {
 
         let dialplan_res = {
             let mut clients = self.clients.lock().await;
-            let mut dp_req = Request::new(ResolveDialplanRequest {
-                caller_contact_value: from.clone(), destination_number: to_aor,
-            });
-            if let Ok(val) = tonic::metadata::MetadataValue::from_str(&call_id) {
-                dp_req.metadata_mut().insert("x-trace-id", val);
-            }
+            let mut dp_req = Request::new(ResolveDialplanRequest { caller_contact_value: from.clone(), destination_number: to_aor });
+            if let Ok(val) = tonic::metadata::MetadataValue::from_str(&call_id) { dp_req.metadata_mut().insert("x-trace-id", val); }
             clients.dialplan.resolve_dialplan(dp_req).await
         };
 
         match dialplan_res {
             Ok(response) => {
                 let resolution = response.into_inner();
-                
                 let rtp_port = match self.media_mgr.allocate_port(&call_id).await {
                     Ok(p) => p,
                     Err(e) => {
@@ -81,9 +75,7 @@ impl CallHandler {
                     }
                 };
 
-                let sbc_rtp_target = self.extract_rtp_target_from_sdp(&req.body)
-                    .unwrap_or_else(|| format!("{}:{}", src_addr.ip(), 30000));
-
+                let sbc_rtp_target = self.extract_rtp_target_from_sdp(&req.body).unwrap_or_else(|| format!("{}:{}", src_addr.ip(), 30000));
                 let _ = self.media_mgr.set_target(rtp_port, &sbc_rtp_target).await;
 
                 let local_tag = sentiric_sip_core::utils::generate_tag("b2bua");
@@ -92,9 +84,7 @@ impl CallHandler {
                 
                 if let Some(to_h) = ok_resp.headers.iter_mut().find(|h| h.name == HeaderName::To) {
                     let clean_val = to_h.value.trim().to_string();
-                    if !clean_val.contains(";tag=") { 
-                        to_h.value = format!("{};tag={}", clean_val, local_tag); 
-                    }
+                    if !clean_val.contains(";tag=") { to_h.value = format!("{};tag={}", clean_val, local_tag); }
                 }
 
                 let contact_uri = format!("<sip:b2bua@{}:{}>", self.config.sbc_public_ip, 5060);
@@ -116,11 +106,10 @@ impl CallHandler {
                     local_tag,
                     caller_tag,
                     client_contact,
-                    proxy_addr: src_addr, // Proxy IP kaydedilir.
+                    // [KRİTİK MİMARİ]: İsteği bize ileten aktif Proxy bacağı kaydediliyor
+                    proxy_addr: src_addr, 
                 };
-                let mut session = CallSession::new(session_data);
-                session.active_transaction = Some(tx);
-                self.calls.insert(session).await;
+                self.calls.insert(CallSession::new(session_data)).await;
 
                 if transport.send(&ok_resp.to_bytes(), src_addr).await.is_ok() {
                     self.event_mgr.publish_call_started(&call_id, rtp_port, &sbc_rtp_target, &from, &to, Some(resolution)).await;
@@ -134,6 +123,7 @@ impl CallHandler {
         }
     }
     
+    // Outbound, Bye, Cancel, Ack aynıdır...
     pub async fn process_outbound_invite(&self, transport: Arc<sentiric_sip_core::SipTransport>, call_id: &str, from_uri: &str, to_uri: &str) -> anyhow::Result<()> {
         let rtp_port = self.media_mgr.allocate_port(call_id).await?;
         let sdp_body = self.media_mgr.generate_sdp(rtp_port);
@@ -218,9 +208,16 @@ impl CallHandler {
             bye.headers.push(Header::new(HeaderName::Route, format!("<sip:sbc@{}:{};lr>", self.config.sbc_public_ip, 5060)));
             bye.headers.push(Header::new(HeaderName::ContentLength, "0".to_string()));
 
-            // DNS iptal edildi. Çağrıyı kim kurduysa ona geri gönder.
-            let _ = transport.send(&bye.to_bytes(), session.data.proxy_addr).await;
-            info!(event = "CALL_FORCE_TERMINATED", sip.call_id = %call_id, target = %session.data.proxy_addr, "🛑 Sistem tarafından çağrı zorla sonlandırıldı (Stateful BYE iletildi).");
+            // [MİMARİ DÜZELTME]: Doğrudan kaydedilen proxy IP'sine atış. DNS çözümlemesi kaldırıldı.
+            let proxy_ip = session.data.proxy_addr;
+            match transport.send(&bye.to_bytes(), proxy_ip).await {
+                Ok(_) => {
+                    info!(event = "CALL_FORCE_TERMINATED", sip.call_id = %call_id, target = %proxy_ip, "🛑 Sistem tarafından çağrı zorla sonlandırıldı (Stateful BYE Proxy'e ulaştı).");
+                },
+                Err(e) => {
+                    error!(event = "BYE_DELIVERY_FAILED", sip.call_id = %call_id, error = %e, target = %proxy_ip, "🚨 KRİTİK HATA: BYE paketi Proxy'e iletilemedi!");
+                }
+            }
         }
     }
 }
