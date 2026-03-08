@@ -80,9 +80,6 @@ impl CallHandler {
                 let sbc_rtp_target = self.extract_rtp_target_from_sdp(&req.body)
                     .unwrap_or_else(|| format!("{}:{}", src_addr.ip(), 30000));
 
-                // [KRİTİK DÜZELTME]: Port ayrılır ayrılmaz Media Service'e hedefi bildir.
-                // Bu sayede Media Service anında 20ms'lik yasal sessizlik basmaya başlar, 
-                // SBC kilidi açılır (Latching) ve müşteri sesi 0. saniyede gelmeye başlar.
                 let _ = self.media_mgr.set_target(rtp_port, &sbc_rtp_target).await;
 
                 let local_tag = sentiric_sip_core::utils::generate_tag("b2bua");
@@ -184,22 +181,34 @@ impl CallHandler {
         self.event_mgr.publish_call_answered(call_id).await;
     }
 
+    // [KRİTİK DÜZELTME]: RFC 3261 Uyumlu In-Dialog BYE Üretimi
     pub async fn terminate_session(&self, transport: Arc<sentiric_sip_core::SipTransport>, call_id: &str) {
         if let Some(session) = self.calls.remove(call_id).await {
             self.media_mgr.release_port(session.data.rtp_port, call_id).await;
             self.event_mgr.publish_call_ended(call_id, "system_terminated").await;
             
+            // RFC Uyumlu BYE: From ve To yer değiştirir (Çünkü telefonu arayan değil, aranan olan B2BUA kapatıyor).
             let mut bye = SipPacket::new_request(sentiric_sip_core::Method::Bye, format!("<{}>", session.data.from_uri));
+            
+            let branch = sentiric_sip_core::utils::generate_branch_id();
+            // Proxy'nin anlayabileceği bir Via ekliyoruz
+            bye.headers.push(Header::new(HeaderName::Via, format!("SIP/2.0/UDP {}:{};branch={}", self.config.public_ip, self.config.sip_port, branch)));
+            bye.headers.push(Header::new(HeaderName::MaxForwards, "70".to_string()));
+            
+            // Kapatan biziz (B2BUA), bu yüzden From kısmında kendi tag'imiz olacak
+            bye.headers.push(Header::new(HeaderName::From, format!("<sip:b2bua@{}:{}>;tag={}", self.config.public_ip, self.config.sip_port, session.data.local_tag)));
+            // Hedef Müşteri (Karşı tarafın kendi eklediği To tag'ini okuyamıyorsak bile, FromURI'sini hedefe koymak Proxy'nin yolu bulmasını sağlar)
+            bye.headers.push(Header::new(HeaderName::To, format!("<{}>", session.data.from_uri)));
+            
             bye.headers.push(Header::new(HeaderName::CallId, call_id.to_string()));
             bye.headers.push(Header::new(HeaderName::CSeq, "999 BYE".to_string())); 
-            
-            // [KRİTİK DÜZELTME]: BYE paketinin müşteriye ulaşması için Route başlığı ekle.
             bye.headers.push(Header::new(HeaderName::Route, format!("<sip:sbc@{}:{};lr>", self.config.sbc_public_ip, 5060)));
+            bye.headers.push(Header::new(HeaderName::ContentLength, "0".to_string()));
 
             if let Ok(proxy_addr) = self.config.proxy_sip_addr.parse() {
                 let _ = transport.send(&bye.to_bytes(), proxy_addr).await;
             }
-            info!(event = "CALL_FORCE_TERMINATED", sip.call_id = %call_id, "Sistem (Workflow/Agent) tarafından çağrı zorla sonlandırıldı.");
+            info!(event = "CALL_FORCE_TERMINATED", sip.call_id = %call_id, "Sistem (Workflow/Agent) tarafından çağrı zorla sonlandırıldı (RFC Uyumlu BYE).");
         }
     }
 }
