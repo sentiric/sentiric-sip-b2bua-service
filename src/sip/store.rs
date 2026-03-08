@@ -5,9 +5,10 @@ use dashmap::DashMap;
 use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
 use serde::{Deserialize, Serialize};
-use tracing::error; // [DÜZELTME]: Kullanılmayan info ve debug kaldırıldı
+use tracing::error;
 use sentiric_sip_core::transaction::SipTransaction;
 use sentiric_rtp_core::RtpEndpoint;
+use std::net::SocketAddr; // EKLENDİ
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum CallState {
@@ -27,7 +28,8 @@ pub struct CallSessionData {
     pub rtp_port: u32,
     pub local_tag: String,
     pub caller_tag: String,      
-    pub client_contact: String,  
+    pub client_contact: String,
+    pub proxy_addr: SocketAddr, // [KRİTİK EKLENTİ]: BYE paketi için hedef adres
 }
 
 #[derive(Debug, Clone)]

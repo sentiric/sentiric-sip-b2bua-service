@@ -98,7 +98,7 @@ impl CallHandler {
                 }
 
                 let contact_uri = format!("<sip:b2bua@{}:{}>", self.config.sbc_public_ip, 5060);
-                ok_resp.headers.push(Header::new(HeaderName::Contact, contact_uri));
+                ok_resp.headers.push(Header::new(HeaderName::Contact, contact_uri.clone()));
                 ok_resp.headers.push(Header::new(HeaderName::ContentType, "application/sdp".to_string()));
                 ok_resp.headers.retain(|h| h.name != HeaderName::ContentLength);
                 ok_resp.headers.push(Header::new(HeaderName::ContentLength, sdp_body.len().to_string()));
@@ -116,6 +116,7 @@ impl CallHandler {
                     local_tag,
                     caller_tag,
                     client_contact,
+                    proxy_addr: src_addr, // [KRİTİK]: Proxy adresi kaydediliyor.
                 };
                 let mut session = CallSession::new(session_data);
                 session.active_transaction = Some(tx);
@@ -149,20 +150,20 @@ impl CallHandler {
         invite.headers.push(Header::new(HeaderName::ContentLength, sdp_body.len().to_string()));
         invite.body = sdp_body;
 
-        let session_data = CallSessionData {
-            call_id: call_id.to_string(),
-            state: CallState::Trying,
-            from_uri: from_uri.to_string(),
-            to_uri: to_uri.to_string(),
-            rtp_port,
-            local_tag,
-            caller_tag: "".to_string(),
-            client_contact: contact_uri,
-        };
-        self.calls.insert(CallSession::new(session_data)).await;
-        
         if let Ok(mut addrs) = tokio::net::lookup_host(&self.config.proxy_sip_addr).await {
             if let Some(proxy_addr) = addrs.next() {
+                let session_data = CallSessionData {
+                    call_id: call_id.to_string(),
+                    state: CallState::Trying,
+                    from_uri: from_uri.to_string(),
+                    to_uri: to_uri.to_string(),
+                    rtp_port,
+                    local_tag,
+                    caller_tag: "".to_string(),
+                    client_contact: contact_uri,
+                    proxy_addr, 
+                };
+                self.calls.insert(CallSession::new(session_data)).await;
                 transport.send(&invite.to_bytes(), proxy_addr).await?;
             }
         }
@@ -217,15 +218,9 @@ impl CallHandler {
             bye.headers.push(Header::new(HeaderName::Route, format!("<sip:sbc@{}:{};lr>", self.config.sbc_public_ip, 5060)));
             bye.headers.push(Header::new(HeaderName::ContentLength, "0".to_string()));
 
-            // [MİMARİ DÜZELTME]: parse() yerine lookup_host ile DNS çözümleniyor.
-            if let Ok(mut addrs) = tokio::net::lookup_host(&self.config.proxy_sip_addr).await {
-                if let Some(proxy_addr) = addrs.next() {
-                    let _ = transport.send(&bye.to_bytes(), proxy_addr).await;
-                    info!(event = "CALL_FORCE_TERMINATED", sip.call_id = %call_id, target = %proxy_addr, "🛑 Sistem (Workflow/Agent) tarafından çağrı zorla sonlandırıldı (RFC Uyumlu BYE iletildi).");
-                }
-            } else {
-                error!(event = "DNS_RESOLVE_ERROR", "PROXY adres çözümlenemedi, BYE paketi gönderilemedi!");
-            }
+            // [MİMARİ DÜZELTME]: Doğrudan kaydedilen proxy IP'sine atış. DNS çözümlemesine gerek yok.
+            let _ = transport.send(&bye.to_bytes(), session.data.proxy_addr).await;
+            info!(event = "CALL_FORCE_TERMINATED", sip.call_id = %call_id, target = %session.data.proxy_addr, "🛑 Sistem (Workflow/Agent) tarafından çağrı zorla sonlandırıldı (RFC Uyumlu BYE iletildi).");
         }
     }
 }
