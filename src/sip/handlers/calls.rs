@@ -49,7 +49,6 @@ impl CallHandler {
         let from = req.get_header_value(HeaderName::From).cloned().unwrap_or_default();
         let to = req.get_header_value(HeaderName::To).cloned().unwrap_or_default();
         
-        // [YENİ]: Müşterinin gerçek iletişim adresini ve From Tag'ini sakla
         let caller_tag = from.split(";tag=").nth(1).unwrap_or("").to_string();
         let client_contact = req.get_header_value(HeaderName::Contact).cloned().unwrap_or_else(|| format!("<{}>", from));
         
@@ -161,8 +160,12 @@ impl CallHandler {
             client_contact: contact_uri,
         };
         self.calls.insert(CallSession::new(session_data)).await;
-        let proxy_addr: SocketAddr = self.config.proxy_sip_addr.parse()?;
-        transport.send(&invite.to_bytes(), proxy_addr).await?;
+        
+        if let Ok(mut addrs) = tokio::net::lookup_host(&self.config.proxy_sip_addr).await {
+            if let Some(proxy_addr) = addrs.next() {
+                transport.send(&invite.to_bytes(), proxy_addr).await?;
+            }
+        }
         Ok(())
     }
 
@@ -190,44 +193,39 @@ impl CallHandler {
         self.event_mgr.publish_call_answered(call_id).await;
     }
 
-    // [MİMARİ DÜZELTME]: Tam RFC Uyumlu BYE Üretimi
     pub async fn terminate_session(&self, transport: Arc<sentiric_sip_core::SipTransport>, call_id: &str) {
         if let Some(session) = self.calls.remove(call_id).await {
             self.media_mgr.release_port(session.data.rtp_port, call_id).await;
             self.event_mgr.publish_call_ended(call_id, "system_terminated").await;
             
-            // 1. Request URI: İstemcinin Contact adresine gitmeli
             let r_uri = session.data.client_contact.replace("<", "").replace(">", "");
             let mut bye = SipPacket::new_request(sentiric_sip_core::Method::Bye, r_uri);
             
-            // 2. Via: Kendi adresimiz
             let branch = sentiric_sip_core::utils::generate_branch_id();
             bye.headers.push(Header::new(HeaderName::Via, format!("SIP/2.0/UDP {}:{};branch={}", self.config.public_ip, self.config.sip_port, branch)));
             bye.headers.push(Header::new(HeaderName::MaxForwards, "70".to_string()));
             
-            // 3. To ve From: INVITE'a göre TERS çevrilir (Kapatan taraf değiştiği için)
-            // To: Müşteri (from_uri + caller_tag)
             let to_val = if session.data.caller_tag.is_empty() {
                 session.data.from_uri.clone()
             } else {
                 format!("{};tag={}", session.data.from_uri, session.data.caller_tag)
             };
             bye.headers.push(Header::new(HeaderName::To, to_val));
-            
-            // From: Biz (to_uri + local_tag)
             bye.headers.push(Header::new(HeaderName::From, format!("{};tag={}", session.data.to_uri, session.data.local_tag)));
-            
             bye.headers.push(Header::new(HeaderName::CallId, call_id.to_string()));
             bye.headers.push(Header::new(HeaderName::CSeq, "999 BYE".to_string())); 
-            
-            // 4. Route: Paketi SBC üzerinden dışarı atması için Proxy'e yol gösteriyoruz
             bye.headers.push(Header::new(HeaderName::Route, format!("<sip:sbc@{}:{};lr>", self.config.sbc_public_ip, 5060)));
             bye.headers.push(Header::new(HeaderName::ContentLength, "0".to_string()));
 
-            if let Ok(proxy_addr) = self.config.proxy_sip_addr.parse() {
-                let _ = transport.send(&bye.to_bytes(), proxy_addr).await;
+            // [MİMARİ DÜZELTME]: parse() yerine lookup_host ile DNS çözümleniyor.
+            if let Ok(mut addrs) = tokio::net::lookup_host(&self.config.proxy_sip_addr).await {
+                if let Some(proxy_addr) = addrs.next() {
+                    let _ = transport.send(&bye.to_bytes(), proxy_addr).await;
+                    info!(event = "CALL_FORCE_TERMINATED", sip.call_id = %call_id, target = %proxy_addr, "🛑 Sistem (Workflow/Agent) tarafından çağrı zorla sonlandırıldı (RFC Uyumlu BYE iletildi).");
+                }
+            } else {
+                error!(event = "DNS_RESOLVE_ERROR", "PROXY adres çözümlenemedi, BYE paketi gönderilemedi!");
             }
-            info!(event = "CALL_FORCE_TERMINATED", sip.call_id = %call_id, "🛑 Sistem (Workflow/Agent) tarafından çağrı zorla sonlandırıldı (RFC Uyumlu BYE).");
         }
     }
 }
