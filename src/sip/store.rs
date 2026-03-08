@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tracing::error;
 use sentiric_sip_core::transaction::SipTransaction;
 use sentiric_rtp_core::RtpEndpoint;
-use std::net::SocketAddr; // EKLENDİ
+use std::net::SocketAddr;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum CallState {
@@ -28,8 +28,8 @@ pub struct CallSessionData {
     pub rtp_port: u32,
     pub local_tag: String,
     pub caller_tag: String,      
-    pub client_contact: String,
-    pub proxy_addr: SocketAddr, // [KRİTİK EKLENTİ]: BYE paketi için hedef adres
+    pub client_contact: String,  
+    pub proxy_addr: SocketAddr, // [EKLENDİ]: Geri dönüş yolu kilitlenmesi için Proxy adresi.
 }
 
 #[derive(Debug, Clone)]
