@@ -48,6 +48,11 @@ impl CallHandler {
         let call_id = req.get_header_value(HeaderName::CallId).cloned().unwrap_or_default();
         let from = req.get_header_value(HeaderName::From).cloned().unwrap_or_default();
         let to = req.get_header_value(HeaderName::To).cloned().unwrap_or_default();
+        
+        // [YENİ]: Müşterinin gerçek iletişim adresini ve From Tag'ini sakla
+        let caller_tag = from.split(";tag=").nth(1).unwrap_or("").to_string();
+        let client_contact = req.get_header_value(HeaderName::Contact).cloned().unwrap_or_else(|| format!("<{}>", from));
+        
         let to_uri = SipUri::from_str(&to).unwrap_or_else(|_| SipUri::from_str("sip:unknown@sentiric.local").unwrap());
         let to_aor = to_uri.user.unwrap_or_default();
 
@@ -110,6 +115,8 @@ impl CallHandler {
                     to_uri: to.clone(),
                     rtp_port,
                     local_tag,
+                    caller_tag,
+                    client_contact,
                 };
                 let mut session = CallSession::new(session_data);
                 session.active_transaction = Some(tx);
@@ -138,7 +145,7 @@ impl CallHandler {
         invite.headers.push(Header::new(HeaderName::CallId, call_id.to_string()));
         invite.headers.push(Header::new(HeaderName::CSeq, "1 INVITE".to_string()));
         let contact_uri = format!("<sip:b2bua@{}:{}>", self.config.sbc_public_ip, 5060);
-        invite.headers.push(Header::new(HeaderName::Contact, contact_uri));
+        invite.headers.push(Header::new(HeaderName::Contact, contact_uri.clone()));
         invite.headers.push(Header::new(HeaderName::ContentType, "application/sdp".to_string()));
         invite.headers.push(Header::new(HeaderName::ContentLength, sdp_body.len().to_string()));
         invite.body = sdp_body;
@@ -150,6 +157,8 @@ impl CallHandler {
             to_uri: to_uri.to_string(),
             rtp_port,
             local_tag,
+            caller_tag: "".to_string(),
+            client_contact: contact_uri,
         };
         self.calls.insert(CallSession::new(session_data)).await;
         let proxy_addr: SocketAddr = self.config.proxy_sip_addr.parse()?;
@@ -163,7 +172,7 @@ impl CallHandler {
         if let Some(session) = self.calls.remove(&call_id).await {
             self.media_mgr.release_port(session.data.rtp_port, &call_id).await;
             self.event_mgr.publish_call_ended(&call_id, "normal_clearing").await;
-            info!(event = "CALL_TERMINATED", sip.call_id = %call_id, "✅ Çağrı temizlendi");
+            info!(event = "CALL_TERMINATED", sip.call_id = %call_id, "✅ Çağrı temizlendi (İstemci kapattı)");
         }
     }
 
@@ -181,34 +190,44 @@ impl CallHandler {
         self.event_mgr.publish_call_answered(call_id).await;
     }
 
-    // [KRİTİK DÜZELTME]: RFC 3261 Uyumlu In-Dialog BYE Üretimi
+    // [MİMARİ DÜZELTME]: Tam RFC Uyumlu BYE Üretimi
     pub async fn terminate_session(&self, transport: Arc<sentiric_sip_core::SipTransport>, call_id: &str) {
         if let Some(session) = self.calls.remove(call_id).await {
             self.media_mgr.release_port(session.data.rtp_port, call_id).await;
             self.event_mgr.publish_call_ended(call_id, "system_terminated").await;
             
-            // RFC Uyumlu BYE: From ve To yer değiştirir (Çünkü telefonu arayan değil, aranan olan B2BUA kapatıyor).
-            let mut bye = SipPacket::new_request(sentiric_sip_core::Method::Bye, format!("<{}>", session.data.from_uri));
+            // 1. Request URI: İstemcinin Contact adresine gitmeli
+            let r_uri = session.data.client_contact.replace("<", "").replace(">", "");
+            let mut bye = SipPacket::new_request(sentiric_sip_core::Method::Bye, r_uri);
             
+            // 2. Via: Kendi adresimiz
             let branch = sentiric_sip_core::utils::generate_branch_id();
-            // Proxy'nin anlayabileceği bir Via ekliyoruz
             bye.headers.push(Header::new(HeaderName::Via, format!("SIP/2.0/UDP {}:{};branch={}", self.config.public_ip, self.config.sip_port, branch)));
             bye.headers.push(Header::new(HeaderName::MaxForwards, "70".to_string()));
             
-            // Kapatan biziz (B2BUA), bu yüzden From kısmında kendi tag'imiz olacak
-            bye.headers.push(Header::new(HeaderName::From, format!("<sip:b2bua@{}:{}>;tag={}", self.config.public_ip, self.config.sip_port, session.data.local_tag)));
-            // Hedef Müşteri (Karşı tarafın kendi eklediği To tag'ini okuyamıyorsak bile, FromURI'sini hedefe koymak Proxy'nin yolu bulmasını sağlar)
-            bye.headers.push(Header::new(HeaderName::To, format!("<{}>", session.data.from_uri)));
+            // 3. To ve From: INVITE'a göre TERS çevrilir (Kapatan taraf değiştiği için)
+            // To: Müşteri (from_uri + caller_tag)
+            let to_val = if session.data.caller_tag.is_empty() {
+                session.data.from_uri.clone()
+            } else {
+                format!("{};tag={}", session.data.from_uri, session.data.caller_tag)
+            };
+            bye.headers.push(Header::new(HeaderName::To, to_val));
+            
+            // From: Biz (to_uri + local_tag)
+            bye.headers.push(Header::new(HeaderName::From, format!("{};tag={}", session.data.to_uri, session.data.local_tag)));
             
             bye.headers.push(Header::new(HeaderName::CallId, call_id.to_string()));
             bye.headers.push(Header::new(HeaderName::CSeq, "999 BYE".to_string())); 
+            
+            // 4. Route: Paketi SBC üzerinden dışarı atması için Proxy'e yol gösteriyoruz
             bye.headers.push(Header::new(HeaderName::Route, format!("<sip:sbc@{}:{};lr>", self.config.sbc_public_ip, 5060)));
             bye.headers.push(Header::new(HeaderName::ContentLength, "0".to_string()));
 
             if let Ok(proxy_addr) = self.config.proxy_sip_addr.parse() {
                 let _ = transport.send(&bye.to_bytes(), proxy_addr).await;
             }
-            info!(event = "CALL_FORCE_TERMINATED", sip.call_id = %call_id, "Sistem (Workflow/Agent) tarafından çağrı zorla sonlandırıldı (RFC Uyumlu BYE).");
+            info!(event = "CALL_FORCE_TERMINATED", sip.call_id = %call_id, "🛑 Sistem (Workflow/Agent) tarafından çağrı zorla sonlandırıldı (RFC Uyumlu BYE).");
         }
     }
 }
