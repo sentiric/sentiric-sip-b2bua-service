@@ -1,7 +1,7 @@
 // sentiric-b2bua-service/src/sip/store.rs
 
 use std::sync::Arc;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,7 @@ pub struct CallSessionData {
     pub local_tag: String,
     pub caller_tag: String,      
     pub client_contact: String,  
-    pub proxy_addr: SocketAddr, // [EKLENDİ]: Geri dönüş yolu kilitlenmesi için Proxy adresi.
+    pub proxy_addr: SocketAddr, 
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +52,8 @@ impl CallSession {
 #[derive(Clone)]
 pub struct CallStore {
     local_cache: Arc<DashMap<String, CallSession>>,
+    // [YENİ]: Henüz kurulmadan iptal edilen (Race Condition) çağrıların kara listesi
+    early_cancelled: Arc<DashSet<String>>,
     redis: ConnectionManager,
 }
 
@@ -59,7 +61,11 @@ impl CallStore {
     pub async fn new(redis_url: &str) -> anyhow::Result<Self> {
         let client = redis::Client::open(redis_url)?;
         let conn = ConnectionManager::new(client).await?;
-        Ok(Self { local_cache: Arc::new(DashMap::new()), redis: conn })
+        Ok(Self { 
+            local_cache: Arc::new(DashMap::new()), 
+            early_cancelled: Arc::new(DashSet::new()),
+            redis: conn 
+        })
     }
 
     pub async fn insert(&self, session: CallSession) {
@@ -103,6 +109,17 @@ impl CallStore {
         let key = format!("b2bua:call:{}", call_id);
         let mut conn = self.redis.clone();
         let _: redis::RedisResult<()> = conn.del(&key).await;
+        self.early_cancelled.remove(call_id); // Temizlik
         self.local_cache.remove(call_id).map(|(_, s)| s)
+    }
+
+    // [YENİ]: Erken iptal işaretleme
+    pub async fn mark_early_cancelled(&self, call_id: &str) {
+        self.early_cancelled.insert(call_id.to_string());
+    }
+
+    // [YENİ]: Erken iptal kontrolü
+    pub async fn is_early_cancelled(&self, call_id: &str) -> bool {
+        self.early_cancelled.contains(call_id)
     }
 }

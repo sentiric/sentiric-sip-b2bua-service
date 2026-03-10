@@ -1,10 +1,9 @@
 // sentiric-b2bua-service/src/sip/handlers/calls.rs
-
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::net::SocketAddr;
 use std::str::FromStr; 
-use tracing::{info, error};
+use tracing::{info, error, warn}; // warn eklendi
 use sentiric_sip_core::{
     SipPacket, HeaderName, Header, SipUri,
     builder::SipResponseFactory,
@@ -106,10 +105,16 @@ impl CallHandler {
                     local_tag,
                     caller_tag,
                     client_contact,
-                    // [KRİTİK MİMARİ]: İsteği bize ileten aktif Proxy bacağı kaydediliyor
                     proxy_addr: src_addr, 
                 };
                 self.calls.insert(CallSession::new(session_data)).await;
+
+                // [ZOMBIE PORT KORUMASI - MİMARİ DÜZELTME]
+                if self.calls.is_early_cancelled(&call_id).await {
+                    warn!(event="EARLY_CANCEL_CAUGHT", sip.call_id=%call_id, "⚠️ Arama kurulurken müşteri iptal etmiş. Port geri veriliyor.");
+                    self.terminate_session(transport.clone(), &call_id).await;
+                    return; // 200 OK gönderme, zaten vazgeçti
+                }
 
                 if transport.send(&ok_resp.to_bytes(), src_addr).await.is_ok() {
                     self.event_mgr.publish_call_started(&call_id, rtp_port, &sbc_rtp_target, &from, &to, Some(resolution)).await;
@@ -122,8 +127,7 @@ impl CallHandler {
             }
         }
     }
-    
-    // Outbound, Bye, Cancel, Ack aynıdır...
+
     pub async fn process_outbound_invite(&self, transport: Arc<sentiric_sip_core::SipTransport>, call_id: &str, from_uri: &str, to_uri: &str) -> anyhow::Result<()> {
         let rtp_port = self.media_mgr.allocate_port(call_id).await?;
         let sdp_body = self.media_mgr.generate_sdp(rtp_port);
@@ -173,9 +177,14 @@ impl CallHandler {
     pub async fn process_cancel(&self, transport: Arc<sentiric_sip_core::SipTransport>, req: SipPacket, src_addr: SocketAddr) {
         let call_id = req.get_header_value(HeaderName::CallId).cloned().unwrap_or_default();
         let _ = transport.send(&SipResponseFactory::create_200_ok(&req).to_bytes(), src_addr).await;
+        
+        // [ZOMBIE PORT KORUMASI]
+        self.calls.mark_early_cancelled(&call_id).await;
+
         if let Some(session) = self.calls.remove(&call_id).await {
             self.media_mgr.release_port(session.data.rtp_port, &call_id).await;
             self.event_mgr.publish_call_ended(&call_id, "cancelled").await;
+            info!(event = "CALL_CANCELLED", sip.call_id = %call_id, "⛔ Çağrı kullanıcı tarafından kurulmadan iptal edildi.");
         }
     }
 
@@ -208,7 +217,6 @@ impl CallHandler {
             bye.headers.push(Header::new(HeaderName::Route, format!("<sip:sbc@{}:{};lr>", self.config.sbc_public_ip, 5060)));
             bye.headers.push(Header::new(HeaderName::ContentLength, "0".to_string()));
 
-            // [MİMARİ DÜZELTME]: Doğrudan kaydedilen proxy IP'sine atış. DNS çözümlemesi kaldırıldı.
             let proxy_ip = session.data.proxy_addr;
             match transport.send(&bye.to_bytes(), proxy_ip).await {
                 Ok(_) => {
