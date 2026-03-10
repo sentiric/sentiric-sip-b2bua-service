@@ -1,9 +1,11 @@
 // sentiric-b2bua-service/src/sip/handlers/calls.rs
+
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::net::SocketAddr;
 use std::str::FromStr; 
-use tracing::{info, error, warn}; // warn eklendi
+use std::time::{Duration, Instant};
+use tracing::{info, error, warn};
 use sentiric_sip_core::{
     SipPacket, HeaderName, Header, SipUri,
     builder::SipResponseFactory,
@@ -55,20 +57,45 @@ impl CallHandler {
 
         let _ = transport.send(&SipResponseFactory::create_100_trying(&req).to_bytes(), src_addr).await;
 
-        let dialplan_res = {
-            let mut clients = self.clients.lock().await;
-            let mut dp_req = Request::new(ResolveDialplanRequest { caller_contact_value: from.clone(), destination_number: to_aor });
+        // [SMART RETRY ENGINE]: Dialplan Service
+        let mut dialplan_client = {
+            let guard = self.clients.lock().await;
+            guard.dialplan.clone()
+        };
+
+        let mut attempt = 0;
+        let mut backoff = Duration::from_millis(500);
+        let dialplan_res = loop {
+            attempt += 1;
+            let start = Instant::now();
+            let mut dp_req = Request::new(ResolveDialplanRequest { caller_contact_value: from.clone(), destination_number: to_aor.clone() });
             if let Ok(val) = tonic::metadata::MetadataValue::from_str(&call_id) { dp_req.metadata_mut().insert("x-trace-id", val); }
-            clients.dialplan.resolve_dialplan(dp_req).await
+            
+            info!(event="GRPC_OUT_ATTEMPT", grpc.target="dialplan-service", attempt=attempt, sip.call_id=%call_id, "📡 Dialplan'a danışılıyor...");
+            
+            match dialplan_client.resolve_dialplan(dp_req).await {
+                Ok(res) => {
+                    info!(event="GRPC_OUT_SUCCESS", grpc.target="dialplan-service", attempt=attempt, latency_ms=start.elapsed().as_millis(), "✅ Dialplan kararı alındı.");
+                    break Ok(res);
+                },
+                Err(e) => {
+                    warn!(event="GRPC_OUT_FAIL", grpc.target="dialplan-service", attempt=attempt, latency_ms=start.elapsed().as_millis(), error=%e, "⚠️ Dialplan çağrısı başarısız.");
+                    if attempt >= 3 { break Err(e); }
+                    tokio::time::sleep(backoff).await;
+                    backoff *= 2;
+                }
+            }
         };
 
         match dialplan_res {
             Ok(response) => {
                 let resolution = response.into_inner();
+                
+                // Media Manager kendi içinde de retry yapıyor olmalı (media.rs içinde ayarlayacağız)
                 let rtp_port = match self.media_mgr.allocate_port(&call_id).await {
                     Ok(p) => p,
                     Err(e) => {
-                        error!(event="MEDIA_ALLOC_FAIL", sip.call_id=%call_id, error=%e, "Media failure");
+                        error!(event="MEDIA_ALLOC_FATAL", sip.call_id=%call_id, error=%e, "❌ Media port tahsisi tüm denemelere rağmen başarısız.");
                         let _ = transport.send(&SipResponseFactory::create_error(&req, 503, "Media Error").to_bytes(), src_addr).await;
                         return;
                     }
@@ -109,11 +136,10 @@ impl CallHandler {
                 };
                 self.calls.insert(CallSession::new(session_data)).await;
 
-                // [ZOMBIE PORT KORUMASI - MİMARİ DÜZELTME]
                 if self.calls.is_early_cancelled(&call_id).await {
                     warn!(event="EARLY_CANCEL_CAUGHT", sip.call_id=%call_id, "⚠️ Arama kurulurken müşteri iptal etmiş. Port geri veriliyor.");
                     self.terminate_session(transport.clone(), &call_id).await;
-                    return; // 200 OK gönderme, zaten vazgeçti
+                    return; 
                 }
 
                 if transport.send(&ok_resp.to_bytes(), src_addr).await.is_ok() {
@@ -122,12 +148,14 @@ impl CallHandler {
                 }
             },
             Err(e) => {
-                error!(event="DIALPLAN_ERROR", sip.call_id=%call_id, error=%e, "Dialplan hatası");
+                error!(event="DIALPLAN_FATAL", sip.call_id=%call_id, error=%e, "❌ Dialplan'a erişilemediği için çağrı reddedildi.");
                 let _ = transport.send(&SipResponseFactory::create_error(&req, 500, "Routing Error").to_bytes(), src_addr).await;
             }
         }
     }
 
+    // Outbound, Bye, Cancel, Ack aynıdır... (Kısaltıldı)
+    // ... [ÖNCEKİ KODLARIN AYNISI BURAYA GELECEK, VETO'DAKİ DİĞER FONKSİYONLAR DEĞİŞMİYOR]
     pub async fn process_outbound_invite(&self, transport: Arc<sentiric_sip_core::SipTransport>, call_id: &str, from_uri: &str, to_uri: &str) -> anyhow::Result<()> {
         let rtp_port = self.media_mgr.allocate_port(call_id).await?;
         let sdp_body = self.media_mgr.generate_sdp(rtp_port);
@@ -178,7 +206,6 @@ impl CallHandler {
         let call_id = req.get_header_value(HeaderName::CallId).cloned().unwrap_or_default();
         let _ = transport.send(&SipResponseFactory::create_200_ok(&req).to_bytes(), src_addr).await;
         
-        // [ZOMBIE PORT KORUMASI]
         self.calls.mark_early_cancelled(&call_id).await;
 
         if let Some(session) = self.calls.remove(&call_id).await {
