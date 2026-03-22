@@ -1,6 +1,7 @@
+# Dosya: Cargo.toml
 [package]
-name = "sentiric-b2bua-service"
-version = "1.6.3"
+name = "sentiric-sip-b2bua-service"
+version = "1.6.4"
 edition = "2021"
 
 [dependencies]

@@ -1,4 +1,4 @@
-// sentiric-b2bua-service/src/app.rs
+// src/app.rs
 use crate::config::AppConfig;
 use crate::grpc::service::MyB2BuaService;
 use crate::grpc::client::InternalClients;
@@ -32,7 +32,7 @@ async fn handle_http_request(_req: Request<Body>) -> Result<Response<Body>, Infa
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"status":"ok", "service": "b2bua-service"}"#))
+        .body(Body::from(r#"{"status":"ok", "service": "sip-b2bua-service"}"#))
         .unwrap())
 }
 
@@ -48,7 +48,7 @@ impl App {
         
         if config.log_format == "json" {
             let suts_formatter = SutsFormatter::new(
-                "b2bua-service".to_string(),
+                "sip-b2bua-service".to_string(),
                 config.service_version.clone(),
                 config.env.clone(),
                 config.node_hostname.clone(),
@@ -60,7 +60,7 @@ impl App {
 
         info!(
             event = "SYSTEM_STARTUP",
-            service_name = "sentiric-b2bua-service",
+            service_name = "sip-b2bua-service",
             version = %config.service_version,
             profile = %config.env,
             "🚀 B2BUA Servisi Başlatılıyor (SUTS v4.0)"

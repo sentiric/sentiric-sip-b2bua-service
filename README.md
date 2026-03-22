@@ -1,4 +1,4 @@
-# 🔄 Sentiric B2BUA Service
+# 🔄 Sentiric Sip B2BUA Service
 
 [![Status](https://img.shields.io/badge/status-active-success.svg)]()
 [![Language](https://img.shields.io/badge/language-Rust-orange.svg)]()

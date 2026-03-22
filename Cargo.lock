@@ -2410,8 +2410,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d767eb0aabc880b29956c35734170f26ed551a859dbd361d140cdbeca61ab1e2"
 
 [[package]]
-name = "sentiric-b2bua-service"
-version = "1.6.3"
+name = "sentiric-contracts"
+version = "1.17.0"
+source = "git+https://github.com/sentiric/sentiric-contracts.git?tag=v1.17.0#df359327faa3d0cbf2704fa5b148b7c6cceedc8f"
+dependencies = [
+ "prost",
+ "prost-types",
+ "serde",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
+name = "sentiric-rtp-core"
+version = "1.6.1"
+source = "git+https://github.com/sentiric/sentiric-rtp-core.git?tag=v1.6.1#ac14b6b3e5f4495c7f9e6f68f97ee641f01ccf25"
+dependencies = [
+ "cc",
+ "glob",
+ "libc",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "sentiric-sip-b2bua-service"
+version = "1.6.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2437,30 +2461,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "sentiric-contracts"
-version = "1.17.0"
-source = "git+https://github.com/sentiric/sentiric-contracts.git?tag=v1.17.0#df359327faa3d0cbf2704fa5b148b7c6cceedc8f"
-dependencies = [
- "prost",
- "prost-types",
- "serde",
- "tonic",
- "tonic-build",
-]
-
-[[package]]
-name = "sentiric-rtp-core"
-version = "1.6.1"
-source = "git+https://github.com/sentiric/sentiric-rtp-core.git?tag=v1.6.1#ac14b6b3e5f4495c7f9e6f68f97ee641f01ccf25"
-dependencies = [
- "cc",
- "glob",
- "libc",
- "tokio",
- "tracing",
 ]
 
 [[package]]
