@@ -47,11 +47,13 @@ impl App {
         let subscriber = Registry::default().with(env_filter);
         
         if config.log_format == "json" {
+            // [ARCH-COMPLIANCE] tenant_id artık config'den alınıyor
             let suts_formatter = SutsFormatter::new(
                 "sip-b2bua-service".to_string(),
                 config.service_version.clone(),
                 config.env.clone(),
                 config.node_hostname.clone(),
+                config.tenant_id.clone(), // YENİ
             );
             subscriber.with(fmt::layer().event_format(suts_formatter)).init();
         } else {

@@ -49,10 +49,12 @@ struct ResourceContext {
 
 pub struct SutsFormatter {
     resource: ResourceContext,
+    // [ARCH-COMPLIANCE] tenant_id config'den alınır, hardcoded değil
+    tenant_id: String,
 }
 
 impl SutsFormatter {
-    pub fn new(service_name: String, version: String, env: String, host_name: String) -> Self {
+    pub fn new(service_name: String, version: String, env: String, host_name: String, tenant_id: String) -> Self {
         Self {
             resource: ResourceContext {
                 service_name,
@@ -60,6 +62,8 @@ impl SutsFormatter {
                 service_env: env,
                 host_name,
             },
+            // [ARCH-COMPLIANCE] tenant_id runtime'da config'den geliyor
+            tenant_id,
         }
     }
 }
@@ -106,14 +110,16 @@ where
             None
         };
 
+        // format_event içinde:
         let log_record = SutsLogRecord {
             schema_v: "1.0.0",
             ts,
             severity,
-            tenant_id: "sentiric_demo".to_string(), // Multi-tenant için dinamikleşecek
+            // [ARCH-COMPLIANCE] artık hardcoded "sentiric_demo" yok
+            tenant_id: self.tenant_id.clone(),
             resource: self.resource.clone(),
             trace_id,
-            span_id: None,
+            span_id: None, // span_id propagation sonraki iterasyonda
             event: event_name,
             message,
             attributes: visitor.fields,

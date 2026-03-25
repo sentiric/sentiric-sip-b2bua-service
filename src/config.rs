@@ -39,6 +39,9 @@ pub struct AppConfig {
     pub cert_path: String,
     pub key_path: String,
     pub ca_path: String,
+
+    /// Tenant kimliği — zorunlu, boş olamaz
+    pub tenant_id: String,    
 }
 
 impl AppConfig {
@@ -58,7 +61,13 @@ impl AppConfig {
         let public_sip_port = env::var("SIP_SBC_ADVERTISED_PORT").unwrap_or_else(|_| "5060".to_string()).parse::<u16>().unwrap_or(5060);
         let node_ip = env::var("NODE_IP").context("ZORUNLU: NODE_IP eksik")?;    
 
-       
+        // [ARCH-COMPLIANCE] tenant_id zorunlu alan
+        let tenant_id = std::env::var("TENANT_ID")
+            .map_err(|_| anyhow::anyhow!("[ARCH-COMPLIANCE] TENANT_ID env var zorunludur, tanımlanmamış"))?;
+        
+        if tenant_id.is_empty() {
+            anyhow::bail!("[ARCH-COMPLIANCE] TENANT_ID boş olamaz");
+        }     
 
         Ok(AppConfig {
             grpc_listen_addr: grpc_addr,
@@ -91,6 +100,8 @@ impl AppConfig {
             cert_path: env::var("SIP_B2BUA_SERVICE_CERT_PATH").context("CERT PATH")?,
             key_path: env::var("SIP_B2BUA_SERVICE_KEY_PATH").context("KEY PATH")?,
             ca_path: env::var("GRPC_TLS_CA_PATH").context("CA PATH")?,
+
+            tenant_id,            
         })
     }
 }

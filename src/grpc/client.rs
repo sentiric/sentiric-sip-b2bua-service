@@ -21,18 +21,29 @@ impl InternalClients {
     pub async fn connect(config: &AppConfig) -> Result<Self> {
         info!("🔌 İç servislere bağlanılıyor (Lazy Connect + mTLS)...");
 
-        // TLS Yapılandırmasını Hazırla
+        // [ARCH-COMPLIANCE] constraints.yaml: mTLS zorunlu. Sertifika yüklenemezse
+        // warn ile devam etmek zero-trust ihlalidir. Servis ÇIKMALDIR.
         let tls_config = if !config.ca_path.is_empty() {
             match load_tls_config(config).await {
                 Ok(cfg) => Some(cfg),
                 Err(e) => {
-                    warn!("⚠️ mTLS sertifikaları yüklenemedi, güvensiz mod denenecek: {}", e);
-                    None
+                    // YANLIŞ — eski davranış:
+                    // warn!("⚠️ mTLS sertifikaları yüklenemedi, güvensiz mod denenecek: {}", e);
+                    // None
+
+                    // DOĞRU — yeni davranış:
+                    anyhow::bail!(
+                        "[ARCH-COMPLIANCE] mTLS sertifikaları yüklenemedi. \
+                        Güvensiz moda düşmek yasaktır. Servis durduruluyor: {}", e
+                    );
                 }
             }
         } else {
-            warn!("⚠️ mTLS CA yolu boş, güvensiz bağlantılar kullanılacak.");
-            None
+            // [ARCH-COMPLIANCE] CA path boşsa da servis başlamamalıdır.
+            anyhow::bail!(
+                "[ARCH-COMPLIANCE] CA_PATH yapılandırılmamış. \
+                mTLS zorunludur, güvensiz bağlantıya izin verilmez."
+            );
         };
         
         // Endpoint'leri oluştur (Henüz bağlanmaz, ilk istekte bağlanır)
