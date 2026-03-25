@@ -1,4 +1,5 @@
-// src/telemetry.rs
+// Dosya: src/telemetry.rs
+
 use chrono::Utc;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -22,6 +23,8 @@ struct SutsLogRecord<'a> {
 
     // 3. Tracing
     trace_id: Option<String>,
+    // [ARCH-COMPLIANCE] constraints.yaml span_id kuralı: None bırakmak yasaktır.
+    // Aktif span varsa span_id doldurulur, yoksa "no-span" sentinel değeri atanır.
     span_id: Option<String>,
 
     // 4. Payload
@@ -54,7 +57,13 @@ pub struct SutsFormatter {
 }
 
 impl SutsFormatter {
-    pub fn new(service_name: String, version: String, env: String, host_name: String, tenant_id: String) -> Self {
+    pub fn new(
+        service_name: String,
+        version: String,
+        env: String,
+        host_name: String,
+        tenant_id: String,
+    ) -> Self {
         Self {
             resource: ResourceContext {
                 service_name,
@@ -62,7 +71,6 @@ impl SutsFormatter {
                 service_env: env,
                 host_name,
             },
-            // [ARCH-COMPLIANCE] tenant_id runtime'da config'den geliyor
             tenant_id,
         }
     }
@@ -75,33 +83,38 @@ where
 {
     fn format_event(
         &self,
-        _ctx: &FmtContext<'_, S, N>,
+        ctx: &FmtContext<'_, S, N>,
         mut writer: Writer<'_>,
         event: &Event<'_>,
     ) -> fmt::Result {
         let meta = event.metadata();
         let ts = Utc::now().to_rfc3339();
-        
+
         let severity = match *meta.level() {
             tracing::Level::ERROR => "ERROR",
-            tracing::Level::WARN => "WARN",
-            tracing::Level::INFO => "INFO",
+            tracing::Level::WARN  => "WARN",
+            tracing::Level::INFO  => "INFO",
             tracing::Level::DEBUG => "DEBUG",
             tracing::Level::TRACE => "DEBUG",
-        }.to_string();
+        }
+        .to_string();
 
         let mut visitor = JsonVisitor::default();
         event.record(&mut visitor);
 
-        let event_name = visitor.fields.remove("event")
+        let event_name = visitor
+            .fields
+            .remove("event")
             .and_then(|v| v.as_str().map(|s| s.to_string()))
             .unwrap_or_else(|| "LOG_EVENT".to_string());
 
-        let message = visitor.fields.remove("message")
+        let message = visitor
+            .fields
+            .remove("message")
             .and_then(|v| v.as_str().map(|s| s.to_string()))
             .unwrap_or_else(String::new);
 
-        // --- INTELLIGENCE LOGIC: TRACE ID PROMOTION ---
+        // --- TRACE ID PROMOTION ---
         let trace_id = if let Some(tid) = visitor.fields.get("trace_id").and_then(|v| v.as_str()) {
             Some(tid.to_string())
         } else if let Some(cid) = visitor.fields.get("sip.call_id").and_then(|v| v.as_str()) {
@@ -110,16 +123,25 @@ where
             None
         };
 
-        // format_event içinde:
+        // [ARCH-COMPLIANCE] constraints.yaml: span_id zorunludur, None bırakmak yasaktır.
+        // Aktif tracing span varsa ID'sini hex olarak çıkar.
+        // Span yoksa (örn: startup logları) "no-span" sentinel değeri kullanılır.
+        let span_id = ctx
+            .lookup_current()
+            .map(|span| {
+                // tracing span ID'si u64 — OTEL uyumlu 16 haneli hex'e çeviriyoruz
+                format!("{:016x}", span.id().into_u64())
+            })
+            .or_else(|| Some("no-span".to_string()));
+
         let log_record = SutsLogRecord {
             schema_v: "1.0.0",
             ts,
             severity,
-            // [ARCH-COMPLIANCE] artık hardcoded "sentiric_demo" yok
             tenant_id: self.tenant_id.clone(),
             resource: self.resource.clone(),
             trace_id,
-            span_id: None, // span_id propagation sonraki iterasyonda
+            span_id,
             event: event_name,
             message,
             attributes: visitor.fields,
@@ -141,10 +163,12 @@ struct JsonVisitor {
 
 impl tracing::field::Visit for JsonVisitor {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
-        self.fields.insert(field.name().to_string(), Value::String(format!("{:?}", value)));
+        self.fields
+            .insert(field.name().to_string(), Value::String(format!("{:?}", value)));
     }
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        self.fields.insert(field.name().to_string(), Value::String(value.to_string()));
+        self.fields
+            .insert(field.name().to_string(), Value::String(value.to_string()));
     }
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
         self.fields.insert(field.name().to_string(), Value::Bool(value));
@@ -158,7 +182,12 @@ impl tracing::field::Visit for JsonVisitor {
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
         self.fields.insert(field.name().to_string(), json!(value));
     }
-    fn record_error(&mut self, field: &tracing::field::Field, value: &(dyn std::error::Error + 'static)) {
-        self.fields.insert(field.name().to_string(), Value::String(value.to_string()));
+    fn record_error(
+        &mut self,
+        field: &tracing::field::Field,
+        value: &(dyn std::error::Error + 'static),
+    ) {
+        self.fields
+            .insert(field.name().to_string(), Value::String(value.to_string()));
     }
 }

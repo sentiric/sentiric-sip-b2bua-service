@@ -8,11 +8,10 @@ Bu servisin mevcut ve gelecekteki tüm geliştirme görevleri, platformun merkez
 
 ## ✅ Mimari Uyum Düzeltmeleri (Arch-Compliance)
 
-- **[2026-03-25]** `refactor(core)`: mTLS graceful degradation kaldırıldı — sertifika yüklenemezse
-  servis artık `bail!` ile çıkıyor. `constraints.yaml` zero-trust kuralı gereği.
-- **[2026-03-25]** `refactor(telemetry)`: `tenant_id` hardcoded `"sentiric_demo"` kaldırıldı —
-  `TENANT_ID` env var'dan zorunlu olarak okunuyor. Multi-tenant uyumu sağlandı.
-- **[TODO]** `span_id` propagation: SUTS v4.0 `span_id` alanı şu an her zaman `None`.
-  OpenTelemetry context'ten span_id extraction sonraki iterasyona bırakıldı.
-- **[TODO]** RabbitMQ channel-level reconnect: Connection retry var ama channel drop
-  senaryosu handle edilmiyor.
+- **[2026-03-25]** `refactor(core)`: mTLS graceful degradation kaldırıldı.
+- **[2026-03-25]** `refactor(telemetry)`: tenant_id hardcoded kaldırıldı, TENANT_ID env var'dan okunuyor.
+- **[2026-03-25]** `refactor(telemetry)`: span_id artık aktif tracing span'den doldurulur,
+  None bırakmak constraints.yaml span_id kuralı gereği yasaktır.
+- **[2026-03-25]** `refactor(rabbitmq)`: Channel-level reconnect eklendi. Connection ve channel
+  ayrı Mutex'lerde tutulur. ensure_healthy_channel() her publish öncesi çağrılır.
+  Consumer için ayrı channel oluşturulur (publish channel'ını bloklamaz).
