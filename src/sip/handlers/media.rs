@@ -40,12 +40,13 @@ impl MediaManager {
                 req.metadata_mut().insert("x-trace-id", val);
             }
 
+            // [ARCH-COMPLIANCE] Zaten call_id ve latency_ms vardı, yapı korundu.
             info!(event="GRPC_OUT_ATTEMPT", grpc.target="media-service", grpc.method="AllocatePort", attempt=attempt, sip.call_id=%call_id, "📡 Medya portu talep ediliyor...");
 
             match media_client.allocate_port(req).await {
                 Ok(res) => {
                     let port = res.into_inner().rtp_port;
-                    info!(event="GRPC_OUT_SUCCESS", grpc.target="media-service", grpc.method="AllocatePort", attempt=attempt, latency_ms=start.elapsed().as_millis(), rtp.port=port, "✅ Medya portu başarıyla alındı.");
+                    info!(event="GRPC_OUT_SUCCESS", grpc.target="media-service", grpc.method="AllocatePort", attempt=attempt, latency_ms=start.elapsed().as_millis(), rtp.port=port, sip.call_id=%call_id, "✅ Medya portu başarıyla alındı.");
                     return Ok(port);
                 },
                 Err(e) => {
