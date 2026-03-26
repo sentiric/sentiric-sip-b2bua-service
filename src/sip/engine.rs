@@ -29,7 +29,10 @@ impl B2BuaEngine {
         rabbitmq: Arc<RabbitMqClient>,
     ) -> Self {
         let media_mgr = MediaManager::new(clients.clone(), config.clone());
-        let event_mgr = EventManager::new(rabbitmq);
+        
+        // [ARCH-COMPLIANCE] tenant_id config üzerinden event_mgr'ye enjekte edildi.
+        let event_mgr = EventManager::new(rabbitmq, config.tenant_id.clone());
+        
         let call_handler = CallHandler::new(config, clients, calls.clone(), media_mgr, event_mgr);
 
         Self { calls, transport, call_handler }

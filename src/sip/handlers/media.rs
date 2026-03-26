@@ -60,7 +60,8 @@ impl MediaManager {
         }
     }
 
-    pub async fn set_target(&self, rtp_port: u32, rtp_target: &str) -> anyhow::Result<()> {
+    // [ARCH-COMPLIANCE] ARCH-006: mandatory_trace_id_propagation kuralı gereği call_id parametresi eklendi.
+    pub async fn set_target(&self, rtp_port: u32, rtp_target: &str, call_id: &str) -> anyhow::Result<()> {
         let mut media_client = { let guard = self.clients.lock().await; guard.media.clone() };
         let mut req = tonic::Request::new(PlayAudioRequest {
             audio_uri: "control://set_target".to_string(),
@@ -68,8 +69,12 @@ impl MediaManager {
             rtp_target_addr: rtp_target.to_string(),
         });
         
-        // [ARCH-COMPLIANCE] ARCH-004: Mandatory gRPC timeouts
         req.set_timeout(Duration::from_millis(100));
+
+        //[ARCH-COMPLIANCE] Eksik olan Trace-ID context propagation yapıldı.
+        if let Ok(val) = tonic::metadata::MetadataValue::from_str(call_id) {
+            req.metadata_mut().insert("x-trace-id", val);
+        }
 
         media_client.play_audio(req).await?;
         Ok(())

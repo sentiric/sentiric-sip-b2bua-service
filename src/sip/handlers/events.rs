@@ -1,4 +1,4 @@
-// sentiric-b2bua-service/src/sip/handlers/events.rs
+// src/sip/handlers/events.rs
 use std::sync::Arc;
 use prost_types::Timestamp;
 use prost::Message;
@@ -9,11 +9,13 @@ use crate::rabbitmq::RabbitMqClient;
 
 pub struct EventManager {
     rabbitmq: Arc<RabbitMqClient>,
+    tenant_id: String, // [ARCH-COMPLIANCE] tenant_id eklendi
 }
 
 impl EventManager {
-    pub fn new(rabbitmq: Arc<RabbitMqClient>) -> Self {
-        Self { rabbitmq }
+    // [ARCH-COMPLIANCE] Constructor tenant_id alacak şekilde güncellendi
+    pub fn new(rabbitmq: Arc<RabbitMqClient>, tenant_id: String) -> Self {
+        Self { rabbitmq, tenant_id }
     }
 
     pub async fn publish_call_started(
@@ -42,7 +44,8 @@ impl EventManager {
             event_type: "call.answered".to_string(),
             trace_id: call_id.to_string(),
             timestamp: Some(Timestamp::from(SystemTime::now())),
-            tenant_id: "system".to_string(),
+            //[ARCH-COMPLIANCE] tenant_isolation kuralı: "system" string'i kaldırılıp dinamik değişkene bağlandı.
+            tenant_id: self.tenant_id.clone(),
             payload_json: json_payload,
         };
         let _ = self.rabbitmq.publish_event_bytes("call.answered", &event.encode_to_vec()).await;

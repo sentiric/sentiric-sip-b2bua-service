@@ -105,10 +105,13 @@ impl CallHandler {
                     }
                 };
 
-                let sbc_rtp_target = self.extract_rtp_target_from_sdp(&req.body).unwrap_or_else(|| format!("{}:{}", src_addr.ip(), 30000));
-                let _ = self.media_mgr.set_target(rtp_port, &sbc_rtp_target).await;
+               let sbc_rtp_target = self.extract_rtp_target_from_sdp(&req.body).unwrap_or_else(|| format!("{}:{}", src_addr.ip(), 30000));
+                
+                //[ARCH-COMPLIANCE] set_target parametresine call_id gönderilerek trace_id zinciri bağlandı.
+                let _ = self.media_mgr.set_target(rtp_port, &sbc_rtp_target, &call_id).await;
 
                 let local_tag = sentiric_sip_core::utils::generate_tag("b2bua");
+                
                 let sdp_body = self.media_mgr.generate_sdp(rtp_port);
                 let mut ok_resp = SipResponseFactory::create_200_ok(&req);
                 
