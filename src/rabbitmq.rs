@@ -23,7 +23,8 @@ impl RabbitMqClient {
     pub async fn new(url: &str) -> Result<Self> {
         let connection = Self::connect_with_retry(url).await?;
         let channel = connection.create_channel().await?;
-        info!("✅ [MQ] RabbitMQ bağlantısı ve channel sağlandı.");
+        //[ARCH-COMPLIANCE] ARCH-007
+        info!(event="MQ_CONNECTED", "✅ [MQ] RabbitMQ bağlantısı ve channel sağlandı.");
 
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
@@ -43,7 +44,8 @@ impl RabbitMqClient {
                     if attempt >= 10 {
                         anyhow::bail!("RabbitMQ'ya bağlanılamadı (10 deneme): {}", e);
                     }
-                    warn!("RabbitMQ bağlantısı bekleniyor... ({}/10): {}", attempt, e);
+                    // [ARCH-COMPLIANCE] ARCH-007
+                    warn!(event="MQ_CONNECT_RETRY", attempt=attempt, error=%e, "RabbitMQ bağlantısı bekleniyor...");
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
             }
@@ -55,23 +57,19 @@ impl RabbitMqClient {
     // connection da ölmüşse önce connection yenilenir.
     async fn ensure_healthy_channel(&self) -> Result<()> {
         let channel = self.channel.lock().await;
+        if channel.status().connected() { return Ok(()); }
+        drop(channel);
 
-        if channel.status().connected() {
-            return Ok(());
-        }
-
-        drop(channel); // lock'u bırak, yeniden oluşturacağız
-
-        warn!("⚠️ [MQ] Channel koptu, yeniden oluşturuluyor...");
+        // [ARCH-COMPLIANCE] ARCH-007
+        warn!(event="MQ_CHANNEL_DROPPED", "⚠️ [MQ] Channel koptu, yeniden oluşturuluyor...");
 
         let conn = self.connection.lock().await;
         let new_channel = if conn.status().connected() {
-            // Connection sağlıklı, sadece channel yenile
             conn.create_channel().await?
         } else {
-            // Connection da ölmüş — her ikisini de yenile
             drop(conn);
-            warn!("⚠️ [MQ] Connection da koptu, yeniden bağlanılıyor...");
+            // [ARCH-COMPLIANCE] ARCH-007
+            warn!(event="MQ_CONNECTION_DROPPED", "⚠️ [MQ] Connection da koptu, yeniden bağlanılıyor...");
             let new_conn = Self::connect_with_retry(&self.url).await?;
             let ch = new_conn.create_channel().await?;
             *self.connection.lock().await = new_conn;
@@ -79,7 +77,7 @@ impl RabbitMqClient {
         };
 
         *self.channel.lock().await = new_channel;
-        info!("✅ [MQ] Channel yeniden oluşturuldu.");
+        info!(event="MQ_CHANNEL_RESTORED", "✅ [MQ] Channel yeniden oluşturuldu.");
         Ok(())
     }
 
@@ -87,57 +85,43 @@ impl RabbitMqClient {
         const MAX_RETRIES: u32 = 3;
 
         for attempt in 0..MAX_RETRIES {
-            // [ARCH-COMPLIANCE] Her publish öncesi channel sağlığı kontrol edilir
             if let Err(e) = self.ensure_healthy_channel().await {
-                error!("❌ [MQ] Channel sağlıklı hale getirilemedi (deneme {}/{}): {}", attempt + 1, MAX_RETRIES, e);
+                //[ARCH-COMPLIANCE] ARCH-007
+                error!(event="MQ_CHANNEL_RECOVERY_FAILED", attempt=attempt+1, max_retries=MAX_RETRIES, error=%e, "❌ [MQ] Channel sağlıklı hale getirilemedi");
                 tokio::time::sleep(tokio::time::Duration::from_millis(200 * (attempt + 1) as u64)).await;
                 continue;
             }
 
             let channel = self.channel.lock().await;
             match channel
-                .basic_publish(
-                    "sentiric_events",
-                    routing_key,
-                    BasicPublishOptions::default(),
-                    payload,
-                    BasicProperties::default().with_delivery_mode(2),
-                )
+                .basic_publish("sentiric_events", routing_key, BasicPublishOptions::default(), payload, BasicProperties::default().with_delivery_mode(2))
                 .await
             {
                 Ok(_) => {
                     if attempt > 0 {
-                        info!("✅ [MQ] Event {} deneme sonrası yayınlandı: {}", attempt, routing_key);
+                        info!(event="MQ_PUBLISH_RETRY_SUCCESS", routing_key=%routing_key, attempt=attempt, "✅ [MQ] Event deneme sonrası yayınlandı");
                     } else {
-                        debug!("📨 [MQ] Event yayınlandı: {} ({} bytes)", routing_key, payload.len());
+                        debug!(event="MQ_EVENT_PUBLISHED", routing_key=%routing_key, payload_size=payload.len(), "📨 [MQ] Event yayınlandı");
                     }
                     return Ok(());
                 }
                 Err(e) => {
-                    error!("❌ [MQ] Publish başarısız ({}/{}): {}", attempt + 1, MAX_RETRIES, e);
+                    error!(event="MQ_PUBLISH_FAILED", routing_key=%routing_key, attempt=attempt+1, max_retries=MAX_RETRIES, error=%e, "❌ [MQ] Publish başarısız");
                     if attempt < MAX_RETRIES - 1 {
-                        tokio::time::sleep(
-                            tokio::time::Duration::from_millis(100 * (attempt + 1) as u64),
-                        )
-                        .await;
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100 * (attempt + 1) as u64)).await;
                     }
                 }
             }
         }
-
         anyhow::bail!("RabbitMQ publish {} denemeden sonra başarısız oldu", MAX_RETRIES)
     }
 
-    pub async fn start_termination_consumer(
-        &self,
-        engine: Arc<crate::sip::engine::B2BuaEngine>,
-    ) {
-        // [ARCH-COMPLIANCE] Consumer için ayrı channel — publish channel'ını bloklamaz
+    pub async fn start_termination_consumer(&self, engine: Arc<crate::sip::engine::B2BuaEngine>) {
         let conn = self.connection.lock().await;
         let consumer_channel = match conn.create_channel().await {
             Ok(ch) => Arc::new(ch),
             Err(e) => {
-                error!("❌ [MQ] Consumer channel oluşturulamadı: {}", e);
+                error!(event="MQ_CONSUMER_CHANNEL_FAIL", error=%e, "❌ [MQ] Consumer channel oluşturulamadı");
                 return;
             }
         };

@@ -69,6 +69,10 @@ impl CallHandler {
             attempt += 1;
             let start = Instant::now();
             let mut dp_req = Request::new(ResolveDialplanRequest { caller_contact_value: from.clone(), destination_number: to_aor.clone() });
+            
+            //[ARCH-COMPLIANCE] ARCH-004: Mandatory gRPC timeouts
+            dp_req.set_timeout(Duration::from_millis(150)); 
+
             if let Ok(val) = tonic::metadata::MetadataValue::from_str(&call_id) { dp_req.metadata_mut().insert("x-trace-id", val); }
             
             info!(event="GRPC_OUT_ATTEMPT", grpc.target="dialplan-service", attempt=attempt, sip.call_id=%call_id, "📡 Dialplan'a danışılıyor...");

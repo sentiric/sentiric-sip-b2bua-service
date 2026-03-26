@@ -66,9 +66,8 @@ impl B2BuaEngine {
                     match packet.method {
                         Method::Invite => self.call_handler.process_invite(self.transport.clone(), packet, src_addr).await,
                         Method::Bye => self.call_handler.process_bye(self.transport.clone(), packet, src_addr).await,
-                        // [YENİ EKLENDİ]: CANCEL artık handle edilecek
                         Method::Cancel => self.call_handler.process_cancel(self.transport.clone(), packet, src_addr).await,
-                        _ => debug!("Method ignored: {:?}", packet.method),
+                        _ => debug!(event="SIP_METHOD_IGNORED", method=?packet.method, "Method ignored"), //[ARCH-COMPLIANCE] ARCH-007
                     }
                 }
             }

@@ -75,7 +75,10 @@ impl CallStore {
             let mut conn = self.redis.clone();
             let key = format!("b2bua:call:{}", call_id);
             let result: redis::RedisResult<()> = conn.set_ex(&key, json, 86400).await;
-            if let Err(e) = result { error!("Redis write error for {}: {}", call_id, e); }
+            if let Err(e) = result { 
+                // [ARCH-COMPLIANCE] ARCH-007
+                error!(event="REDIS_WRITE_ERROR", sip.call_id=%call_id, error=%e, "Redis write error for session"); 
+            }
         }
     }
 

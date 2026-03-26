@@ -35,9 +35,9 @@ impl B2buaService for MyB2BuaService {
              req.call_id
         };
 
-        info!("🚀 [RPC] Dış arama başlatma emri alındı: {}", call_id);
+        // [ARCH-COMPLIANCE] ARCH-007
+        info!(event="RPC_INITIATE_CALL_RECEIVED", sip.call_id=%call_id, "🚀 [RPC] Dış arama başlatma emri alındı.");
 
-        // Engine içindeki yeni metodu çağır
         match self.engine.send_outbound_invite(&call_id, &req.from_uri, &req.to_uri).await {
             Ok(_) => {
                 Ok(Response::new(InitiateCallResponse {
@@ -46,14 +46,16 @@ impl B2buaService for MyB2BuaService {
                 }))
             },
             Err(e) => {
-                error!("❌ [RPC] Arama başlatılamadı: {}", e);
+                // [ARCH-COMPLIANCE] ARCH-007
+                error!(event="RPC_INITIATE_CALL_FAILED", sip.call_id=%call_id, error=%e, "❌ [RPC] Arama başlatılamadı.");
                 Err(Status::internal(e.to_string()))
             }
         }
     }
 
     async fn transfer_call(&self, _req: Request<TransferCallRequest>) -> Result<Response<TransferCallResponse>, Status> {
-        warn!("⚠️ TransferCall henüz desteklenmiyor.");
+        // [ARCH-COMPLIANCE] ARCH-007
+        warn!(event="RPC_TRANSFER_CALL_UNSUPPORTED", "⚠️ TransferCall henüz desteklenmiyor.");
         Err(Status::unimplemented("Transfer not implemented"))
     }
 }

@@ -150,13 +150,21 @@ impl App {
             let addr = http_config.http_listen_addr;
             let make_svc = make_service_fn(|_conn| async { Ok::<_, Infallible>(service_fn(handle_http_request)) });
             let server = HttpServer::bind(&addr).serve(make_svc).with_graceful_shutdown(async { http_shutdown_rx.await.ok(); });
-            if let Err(e) = server.await { error!(error=%e, "HTTP hatası"); }
+            if let Err(e) = server.await { 
+                // [ARCH-COMPLIANCE] ARCH-007: Event anahtarı eklendi
+                error!(event="HTTP_SERVER_ERROR", error=%e, "HTTP hatası oluştu"); 
+            }
         });
 
         let ctrl_c = async { tokio::signal::ctrl_c().await.expect("Ctrl+C hatası"); };
         
         tokio::select! {
-            res = grpc_server_handle => { if let Err(e) = res? { error!("gRPC Error: {}", e); } },
+            res = grpc_server_handle => { 
+                if let Err(e) = res? { 
+                    // [ARCH-COMPLIANCE] ARCH-007: Event anahtarı eklendi
+                    error!(event="GRPC_SERVER_CRASHED", error=%e, "gRPC Sunucusu çöktü"); 
+                } 
+            },
             _res = http_server_handle => {}, 
             _res = sip_handle => {}, 
             _ = ctrl_c => { warn!(event="SIGINT_RECEIVED", "Kapatma sinyali (Ctrl+C) alındı."); },
