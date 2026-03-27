@@ -1,5 +1,4 @@
 // sentiric-b2bua-service/src/sip/store.rs
-
 use std::sync::Arc;
 use dashmap::{DashMap, DashSet};
 use redis::AsyncCommands;
@@ -11,13 +10,7 @@ use sentiric_rtp_core::RtpEndpoint;
 use std::net::SocketAddr;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum CallState {
-    Null,
-    Trying,
-    Ringing,
-    Established,
-    Terminated,
-}
+pub enum CallState { Null, Trying, Ringing, Established, Terminated }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallSessionData {
@@ -41,19 +34,15 @@ pub struct CallSession {
 
 impl CallSession {
     pub fn new(data: CallSessionData) -> Self {
-        Self {
-            data,
-            endpoint: RtpEndpoint::new(None),
-            active_transaction: None,
-        }
+        Self { data, endpoint: RtpEndpoint::new(None), active_transaction: None }
     }
 }
 
 #[derive(Clone)]
 pub struct CallStore {
     local_cache: Arc<DashMap<String, CallSession>>,
-    // [YENİ]: Henüz kurulmadan iptal edilen (Race Condition) çağrıların kara listesi
     early_cancelled: Arc<DashSet<String>>,
+    invites_in_flight: Arc<DashSet<String>>, // [ARCH-COMPLIANCE] Race Condition Lock
     redis: ConnectionManager,
 }
 
@@ -64,8 +53,18 @@ impl CallStore {
         Ok(Self { 
             local_cache: Arc::new(DashMap::new()), 
             early_cancelled: Arc::new(DashSet::new()),
+            invites_in_flight: Arc::new(DashSet::new()), 
             redis: conn 
         })
+    }
+
+    // [ARCH-COMPLIANCE] Eğer bu INVITE zaten işleniyorsa False döner.
+    pub async fn try_lock_invite(&self, call_id: &str) -> bool {
+        self.invites_in_flight.insert(call_id.to_string())
+    }
+
+    pub async fn unlock_invite(&self, call_id: &str) {
+        self.invites_in_flight.remove(call_id);
     }
 
     pub async fn insert(&self, session: CallSession) {
@@ -75,10 +74,7 @@ impl CallStore {
             let mut conn = self.redis.clone();
             let key = format!("b2bua:call:{}", call_id);
             let result: redis::RedisResult<()> = conn.set_ex(&key, json, 86400).await;
-            if let Err(e) = result { 
-                // [ARCH-COMPLIANCE] ARCH-007
-                error!(event="REDIS_WRITE_ERROR", sip.call_id=%call_id, error=%e, "Redis write error for session"); 
-            }
+            if let Err(e) = result { error!(event="REDIS_WRITE_ERROR", sip.call_id=%call_id, error=%e, "Redis write error for session"); }
         }
     }
 
@@ -112,16 +108,14 @@ impl CallStore {
         let key = format!("b2bua:call:{}", call_id);
         let mut conn = self.redis.clone();
         let _: redis::RedisResult<()> = conn.del(&key).await;
-        self.early_cancelled.remove(call_id); // Temizlik
+        self.early_cancelled.remove(call_id); 
         self.local_cache.remove(call_id).map(|(_, s)| s)
     }
 
-    // [YENİ]: Erken iptal işaretleme
     pub async fn mark_early_cancelled(&self, call_id: &str) {
         self.early_cancelled.insert(call_id.to_string());
     }
 
-    // [YENİ]: Erken iptal kontrolü
     pub async fn is_early_cancelled(&self, call_id: &str) -> bool {
         self.early_cancelled.contains(call_id)
     }

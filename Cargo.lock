@@ -2435,7 +2435,7 @@ dependencies = [
 
 [[package]]
 name = "sentiric-sip-b2bua-service"
-version = "1.6.8"
+version = "1.6.9"
 dependencies = [
  "anyhow",
  "chrono",

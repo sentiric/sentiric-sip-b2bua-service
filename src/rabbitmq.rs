@@ -1,5 +1,8 @@
 // Dosya: src/rabbitmq.rs
 
+use prost::Message;
+use sentiric_contracts::sentiric::event::v1::GenericEvent;
+
 use anyhow::Result;
 use lapin::{
     options::*, types::FieldTable, BasicProperties,
@@ -116,6 +119,7 @@ impl RabbitMqClient {
         anyhow::bail!("RabbitMQ publish {} denemeden sonra başarısız oldu", MAX_RETRIES)
     }
 
+    // start_termination_consumer fonksiyonunu AŞAĞIDAKİ İLE DEĞİŞTİRİN:
     pub async fn start_termination_consumer(&self, engine: Arc<crate::sip::engine::B2BuaEngine>) {
         let conn = self.connection.lock().await;
         let consumer_channel = match conn.create_channel().await {
@@ -158,18 +162,23 @@ impl RabbitMqClient {
                 info!("👂 [MQ] B2BUA Termination Consumer dinlemeye başladı.");
                 while let Some(delivery) = consumer.next().await {
                     if let Ok(delivery) = delivery {
-                        if let Ok(json) =
-                            serde_json::from_slice::<serde_json::Value>(&delivery.data)
-                        {
-                            if let Some(call_id) = json["callId"].as_str() {
-                                info!(
-                                    event = "TERMINATION_REQUEST",
-                                    call_id = %call_id,
-                                    "🛑 [MQ] Termination isteği alındı."
-                                );
-                                engine.terminate_session(call_id).await;
+                        
+                        // [ARCH-COMPLIANCE] SOP-02 Protobuf Decode Düzeltmesi!
+                        if let Ok(generic_event) = GenericEvent::decode(&delivery.data[..]) {
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&generic_event.payload_json) {
+                                if let Some(call_id) = json["callId"].as_str() {
+                                    info!(
+                                        event = "TERMINATION_REQUEST",
+                                        call_id = %call_id,
+                                        "🛑 [MQ] Workflow'dan Termination isteği alındı. Çağrı kapatılıyor."
+                                    );
+                                    engine.terminate_session(call_id).await;
+                                }
                             }
+                        } else {
+                            error!(event="MQ_PROTOBUF_PARSE_ERROR", "⚠️ RabbitMQ'dan gelen mesaj Protobuf olarak çözülemedi.");
                         }
+                        
                         let _ = delivery.ack(BasicAckOptions::default()).await;
                     }
                 }

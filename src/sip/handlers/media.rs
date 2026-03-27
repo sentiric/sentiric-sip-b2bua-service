@@ -97,10 +97,13 @@ impl MediaManager {
     }
 
     pub fn generate_sdp(&self, rtp_port: u32) -> Vec<u8> {
+        // AudioProfile::default(), eğer "PREFERRED_AUDIO_CODEC" tanımlıysa
+        // otomatik olarak o kodeği en üste koyar. Hardcode'a gerek yok!
         let profile = AudioProfile::default();
         let mut builder = SdpBuilder::new(self.config.public_ip.clone(), rtp_port as u16)
             .with_ptime(profile.ptime)
             .with_rtcp(false); 
+            
         for codec_conf in profile.codecs {
             builder = builder.add_codec(codec_conf.payload_type, codec_conf.name, codec_conf.rate, codec_conf.fmtp.as_deref());
         }

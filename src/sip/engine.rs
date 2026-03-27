@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::net::SocketAddr;
-use tracing::debug;
+use tracing::{debug, warn}; // warn eklendi
 use sentiric_sip_core::{
     SipPacket, Method, HeaderName,
     transaction::{TransactionEngine, TransactionAction},
@@ -29,10 +29,7 @@ impl B2BuaEngine {
         rabbitmq: Arc<RabbitMqClient>,
     ) -> Self {
         let media_mgr = MediaManager::new(clients.clone(), config.clone());
-        
-        // [ARCH-COMPLIANCE] tenant_id config üzerinden event_mgr'ye enjekte edildi.
         let event_mgr = EventManager::new(rabbitmq, config.tenant_id.clone());
-        
         let call_handler = CallHandler::new(config, clients, calls.clone(), media_mgr, event_mgr);
 
         Self { calls, transport, call_handler }
@@ -67,10 +64,18 @@ impl B2BuaEngine {
             TransactionAction::ForwardToApp => {
                 if packet.is_request() {
                     match packet.method {
-                        Method::Invite => self.call_handler.process_invite(self.transport.clone(), packet, src_addr).await,
+                        Method::Invite => {
+                            // [ARCH-COMPLIANCE] Aynı INVITE'ın 2. kez girmesini engelleyen kilit.
+                            if self.calls.try_lock_invite(&call_id).await {
+                                self.call_handler.process_invite(self.transport.clone(), packet, src_addr).await;
+                                self.calls.unlock_invite(&call_id).await;
+                            } else {
+                                warn!(event="SIP_RACE_CONDITION_PREVENTED", sip.call_id=%call_id, "⚠️ Aynı INVITE için paralel işlem durduruldu (Retransmission koruması).");
+                            }
+                        },
                         Method::Bye => self.call_handler.process_bye(self.transport.clone(), packet, src_addr).await,
                         Method::Cancel => self.call_handler.process_cancel(self.transport.clone(), packet, src_addr).await,
-                        _ => debug!(event="SIP_METHOD_IGNORED", method=?packet.method, "Method ignored"), //[ARCH-COMPLIANCE] ARCH-007
+                        _ => debug!(event="SIP_METHOD_IGNORED", method=?packet.method, "Method ignored"),
                     }
                 }
             }
