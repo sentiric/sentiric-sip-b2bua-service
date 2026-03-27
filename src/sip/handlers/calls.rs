@@ -236,7 +236,8 @@ impl CallHandler {
             let mut bye = SipPacket::new_request(sentiric_sip_core::Method::Bye, r_uri);
             
             let branch = sentiric_sip_core::utils::generate_branch_id();
-            bye.headers.push(Header::new(HeaderName::Via, format!("SIP/2.0/UDP {}:{};branch={}", self.config.public_ip, self.config.sip_port, branch)));
+            // [ARCH-COMPLIANCE] FIX: rport eksikliği container ağlarında UDP paketinin geri dönmemesine sebep olur.
+            bye.headers.push(Header::new(HeaderName::Via, format!("SIP/2.0/UDP {}:{};branch={};rport", self.config.public_ip, self.config.sip_port, branch)));
             bye.headers.push(Header::new(HeaderName::MaxForwards, "70".to_string()));
             
             let to_val = if session.data.caller_tag.is_empty() {
