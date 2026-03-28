@@ -1,5 +1,4 @@
 // sentiric-b2bua-service/src/sip/handlers/calls.rs
-
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::net::SocketAddr;
@@ -57,7 +56,6 @@ impl CallHandler {
 
         let _ = transport.send(&SipResponseFactory::create_100_trying(&req).to_bytes(), src_addr).await;
 
-        // [SMART RETRY ENGINE]: Dialplan Service
         let mut dialplan_client = {
             let guard = self.clients.lock().await;
             guard.dialplan.clone()
@@ -70,7 +68,6 @@ impl CallHandler {
             let start = Instant::now();
             let mut dp_req = Request::new(ResolveDialplanRequest { caller_contact_value: from.clone(), destination_number: to_aor.clone() });
             
-            //[ARCH-COMPLIANCE] ARCH-004: Mandatory gRPC timeouts
             dp_req.set_timeout(Duration::from_millis(150)); 
 
             if let Ok(val) = tonic::metadata::MetadataValue::from_str(&call_id) { dp_req.metadata_mut().insert("x-trace-id", val); }
@@ -95,11 +92,10 @@ impl CallHandler {
             Ok(response) => {
                 let resolution = response.into_inner();
                 
-                // Media Manager kendi içinde de retry yapıyor olmalı (media.rs içinde ayarlayacağız)
                 let rtp_port = match self.media_mgr.allocate_port(&call_id).await {
                     Ok(p) => p,
                     Err(e) => {
-                        error!(event="MEDIA_ALLOC_FATAL", sip.call_id=%call_id, error=%e, "❌ Media port tahsisi tüm denemelere rağmen başarısız.");
+                        error!(event="MEDIA_ALLOC_FATAL", sip.call_id=%call_id, error=%e, "❌ Media port tahsisi başarısız.");
                         let _ = transport.send(&SipResponseFactory::create_error(&req, 503, "Media Error").to_bytes(), src_addr).await;
                         return;
                     }
@@ -107,7 +103,6 @@ impl CallHandler {
 
                let sbc_rtp_target = self.extract_rtp_target_from_sdp(&req.body).unwrap_or_else(|| format!("{}:{}", src_addr.ip(), 30000));
                 
-                //[ARCH-COMPLIANCE] set_target parametresine call_id gönderilerek trace_id zinciri bağlandı.
                 let _ = self.media_mgr.set_target(rtp_port, &sbc_rtp_target, &call_id).await;
 
                 let local_tag = sentiric_sip_core::utils::generate_tag("b2bua");
@@ -141,7 +136,11 @@ impl CallHandler {
                     client_contact,
                     proxy_addr: src_addr, 
                 };
-                self.calls.insert(CallSession::new(session_data)).await;
+
+                // [ARCH-COMPLIANCE] Retransmissionları karşılamak için active_transaction saklandı.
+                let mut new_session = CallSession::new(session_data);
+                new_session.active_transaction = Some(tx);
+                self.calls.insert(new_session).await;
 
                 if self.calls.is_early_cancelled(&call_id).await {
                     warn!(event="EARLY_CANCEL_CAUGHT", sip.call_id=%call_id, "⚠️ Arama kurulurken müşteri iptal etmiş. Port geri veriliyor.");
@@ -155,14 +154,49 @@ impl CallHandler {
                 }
             },
             Err(e) => {
-                error!(event="DIALPLAN_FATAL", sip.call_id=%call_id, error=%e, "❌ Dialplan'a erişilemediği için çağrı reddedildi.");
+                error!(event="DIALPLAN_FATAL", sip.call_id=%call_id, error=%e, "❌ Dialplan'a erişilemedi.");
                 let _ = transport.send(&SipResponseFactory::create_error(&req, 500, "Routing Error").to_bytes(), src_addr).await;
             }
         }
     }
 
-    // Outbound, Bye, Cancel, Ack aynıdır... (Kısaltıldı)
-    // ... [ÖNCEKİ KODLARIN AYNISI BURAYA GELECEK, VETO'DAKİ DİĞER FONKSİYONLAR DEĞİŞMİYOR]
+    // [ARCH-COMPLIANCE] In-Dialog re-INVITE'ları karşılayan ve mevcut portu kaybetmeyen kuralcı fonksiyon.
+    pub async fn process_reinvite(&self, transport: Arc<sentiric_sip_core::SipTransport>, req: SipPacket, src_addr: SocketAddr) {
+        let call_id = req.get_header_value(HeaderName::CallId).cloned().unwrap_or_default();
+        tracing::info!(event="IN_DIALOG_INVITE", sip.call_id=%call_id, "🔄 Re-INVITE alındı, mevcut SDP ile 200 OK dönülüyor.");
+        
+        let session_opt = self.calls.get(&call_id).await;
+        if let Some(mut session) = session_opt {
+            let rtp_port = session.data.rtp_port;
+            let sdp_body = self.media_mgr.generate_sdp(rtp_port);
+            
+            let mut ok_resp = SipResponseFactory::create_200_ok(&req);
+            let contact_uri = format!("<sip:b2bua@{}:{}>", self.config.sbc_public_ip, 5060);
+            
+            if let Some(to_h) = ok_resp.headers.iter_mut().find(|h| h.name == HeaderName::To) {
+                if !to_h.value.contains(";tag=") { 
+                    to_h.value = format!("{};tag={}", to_h.value.trim(), session.data.local_tag); 
+                }
+            }
+            
+            ok_resp.headers.push(Header::new(HeaderName::Contact, contact_uri));
+            ok_resp.headers.push(Header::new(HeaderName::ContentType, "application/sdp".to_string()));
+            ok_resp.headers.retain(|h| h.name != HeaderName::ContentLength);
+            ok_resp.headers.push(Header::new(HeaderName::ContentLength, sdp_body.len().to_string()));
+            ok_resp.body = sdp_body;
+
+            let mut tx = SipTransaction::new(&req).unwrap();
+            tx.update_with_response(&ok_resp);
+            
+            session.active_transaction = Some(tx);
+            self.calls.insert(session).await;
+
+            let _ = transport.send(&ok_resp.to_bytes(), src_addr).await;
+        } else {
+            let _ = transport.send(&SipResponseFactory::create_error(&req, 481, "Call Does Not Exist").to_bytes(), src_addr).await;
+        }
+    }
+
     pub async fn process_outbound_invite(&self, transport: Arc<sentiric_sip_core::SipTransport>, call_id: &str, from_uri: &str, to_uri: &str) -> anyhow::Result<()> {
         let rtp_port = self.media_mgr.allocate_port(call_id).await?;
         let sdp_body = self.media_mgr.generate_sdp(rtp_port);
@@ -236,7 +270,6 @@ impl CallHandler {
             let mut bye = SipPacket::new_request(sentiric_sip_core::Method::Bye, r_uri);
             
             let branch = sentiric_sip_core::utils::generate_branch_id();
-            // [ARCH-COMPLIANCE] FIX: rport eksikliği container ağlarında UDP paketinin geri dönmemesine sebep olur.
             bye.headers.push(Header::new(HeaderName::Via, format!("SIP/2.0/UDP {}:{};branch={};rport", self.config.public_ip, self.config.sip_port, branch)));
             bye.headers.push(Header::new(HeaderName::MaxForwards, "70".to_string()));
             
@@ -253,14 +286,7 @@ impl CallHandler {
             bye.headers.push(Header::new(HeaderName::ContentLength, "0".to_string()));
 
             let proxy_ip = session.data.proxy_addr;
-            match transport.send(&bye.to_bytes(), proxy_ip).await {
-                Ok(_) => {
-                    info!(event = "CALL_FORCE_TERMINATED", sip.call_id = %call_id, target = %proxy_ip, "🛑 Sistem tarafından çağrı zorla sonlandırıldı (Stateful BYE Proxy'e ulaştı).");
-                },
-                Err(e) => {
-                    error!(event = "BYE_DELIVERY_FAILED", sip.call_id = %call_id, error = %e, target = %proxy_ip, "🚨 KRİTİK HATA: BYE paketi Proxy'e iletilemedi!");
-                }
-            }
+            let _ = transport.send(&bye.to_bytes(), proxy_ip).await;
         }
     }
 }

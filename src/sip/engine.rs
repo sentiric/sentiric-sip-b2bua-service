@@ -1,9 +1,8 @@
 // sentiric-b2bua-service/src/sip/engine.rs
-
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::net::SocketAddr;
-use tracing::{debug, warn}; // warn eklendi
+use tracing::{debug, warn}; 
 use sentiric_sip_core::{
     SipPacket, Method, HeaderName,
     transaction::{TransactionEngine, TransactionAction},
@@ -42,6 +41,7 @@ impl B2BuaEngine {
     pub async fn handle_packet(&self, packet: SipPacket, src_addr: SocketAddr) {
         let call_id = packet.get_header_value(HeaderName::CallId).cloned().unwrap_or_default();
         
+        // ACK'lar stateless işlenir.
         if packet.method == Method::Ack {
             self.call_handler.process_ack(&call_id).await;
             return;
@@ -63,19 +63,25 @@ impl B2BuaEngine {
             TransactionAction::Ignore => return,
             TransactionAction::ForwardToApp => {
                 if packet.is_request() {
+                    // [ARCH-COMPLIANCE] Non-exhaustive match hatası düzeltildi.
                     match packet.method {
                         Method::Invite => {
-                            // [ARCH-COMPLIANCE] Aynı INVITE'ın 2. kez girmesini engelleyen kilit.
-                            if self.calls.try_lock_invite(&call_id).await {
-                                self.call_handler.process_invite(self.transport.clone(), packet, src_addr).await;
-                                self.calls.unlock_invite(&call_id).await;
+                            // [ARCH-COMPLIANCE] re-INVITE kontrolü eklenerek çağrı çatallanması engellendi.
+                            if packet.is_in_dialog_request() {
+                                self.call_handler.process_reinvite(self.transport.clone(), packet, src_addr).await;
                             } else {
-                                warn!(event="SIP_RACE_CONDITION_PREVENTED", sip.call_id=%call_id, "⚠️ Aynı INVITE için paralel işlem durduruldu (Retransmission koruması).");
+                                if self.calls.try_lock_invite(&call_id).await {
+                                    self.call_handler.process_invite(self.transport.clone(), packet, src_addr).await;
+                                    self.calls.unlock_invite(&call_id).await;
+                                } else {
+                                    warn!(event="SIP_RACE_CONDITION_PREVENTED", sip.call_id=%call_id, "⚠️ Aynı INVITE için paralel işlem durduruldu (Retransmission koruması).");
+                                }
                             }
                         },
                         Method::Bye => self.call_handler.process_bye(self.transport.clone(), packet, src_addr).await,
                         Method::Cancel => self.call_handler.process_cancel(self.transport.clone(), packet, src_addr).await,
-                        _ => debug!(event="SIP_METHOD_IGNORED", method=?packet.method, "Method ignored"),
+                        // Diğer metodlar B2BUA için şu an stateless yoksayılabilir.
+                        _ => debug!(event="SIP_METHOD_IGNORED", method=?packet.method, "Method ignored or not handled by B2BUA logic"),
                     }
                 }
             }
