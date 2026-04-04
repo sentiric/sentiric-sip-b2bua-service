@@ -1,8 +1,8 @@
 // sentiric-b2bua-service/src/main.rs
 use anyhow::{Context, Result};
 use sentiric_sip_b2bua_service::app::App;
-use std::process;
-use std::io::Write; // [ARCH-COMPLIANCE] SUTS uyumlu raw çıktı için
+use std::io::Write;
+use std::process; // [ARCH-COMPLIANCE] SUTS uyumlu raw çıktı için
 
 fn main() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()

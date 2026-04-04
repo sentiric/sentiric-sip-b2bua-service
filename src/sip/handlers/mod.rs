@@ -1,4 +1,4 @@
 // sentiric-b2bua-service/src/sip/handlers/mod.rs
-pub mod media;
+pub mod calls;
 pub mod events;
-pub mod calls; // Yeni uzman modül
+pub mod media; // Yeni uzman modül

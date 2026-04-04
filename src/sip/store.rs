@@ -1,16 +1,22 @@
 // sentiric-b2bua-service/src/sip/store.rs
-use std::sync::Arc;
 use dashmap::{DashMap, DashSet};
-use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
-use serde::{Deserialize, Serialize};
-use tracing::error;
-use sentiric_sip_core::transaction::SipTransaction;
+use redis::AsyncCommands;
 use sentiric_rtp_core::RtpEndpoint;
+use sentiric_sip_core::transaction::SipTransaction;
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+use std::sync::Arc;
+use tracing::error;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum CallState { Null, Trying, Ringing, Established, Terminated }
+pub enum CallState {
+    Null,
+    Trying,
+    Ringing,
+    Established,
+    Terminated,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallSessionData {
@@ -20,9 +26,9 @@ pub struct CallSessionData {
     pub to_uri: String,
     pub rtp_port: u32,
     pub local_tag: String,
-    pub caller_tag: String,      
-    pub client_contact: String,  
-    pub proxy_addr: SocketAddr, 
+    pub caller_tag: String,
+    pub client_contact: String,
+    pub proxy_addr: SocketAddr,
 }
 
 #[derive(Debug, Clone)]
@@ -34,7 +40,11 @@ pub struct CallSession {
 
 impl CallSession {
     pub fn new(data: CallSessionData) -> Self {
-        Self { data, endpoint: RtpEndpoint::new(None), active_transaction: None }
+        Self {
+            data,
+            endpoint: RtpEndpoint::new(None),
+            active_transaction: None,
+        }
     }
 }
 
@@ -50,11 +60,11 @@ impl CallStore {
     pub async fn new(redis_url: &str) -> anyhow::Result<Self> {
         let client = redis::Client::open(redis_url)?;
         let conn = ConnectionManager::new(client).await?;
-        Ok(Self { 
-            local_cache: Arc::new(DashMap::new()), 
+        Ok(Self {
+            local_cache: Arc::new(DashMap::new()),
             early_cancelled: Arc::new(DashSet::new()),
-            invites_in_flight: Arc::new(DashSet::new()), 
-            redis: conn 
+            invites_in_flight: Arc::new(DashSet::new()),
+            redis: conn,
         })
     }
 
@@ -74,7 +84,9 @@ impl CallStore {
             let mut conn = self.redis.clone();
             let key = format!("b2bua:call:{}", call_id);
             let result: redis::RedisResult<()> = conn.set_ex(&key, json, 86400).await;
-            if let Err(e) = result { error!(event="REDIS_WRITE_ERROR", sip.call_id=%call_id, error=%e, "Redis write error for session"); }
+            if let Err(e) = result {
+                error!(event="REDIS_WRITE_ERROR", sip.call_id=%call_id, error=%e, "Redis write error for session");
+            }
         }
     }
 
@@ -90,14 +102,17 @@ impl CallStore {
     }
 
     pub async fn get(&self, call_id: &str) -> Option<CallSession> {
-        if let Some(session) = self.local_cache.get(call_id) { return Some(session.clone()); }
+        if let Some(session) = self.local_cache.get(call_id) {
+            return Some(session.clone());
+        }
         let key = format!("b2bua:call:{}", call_id);
         let mut conn = self.redis.clone();
         let result: redis::RedisResult<String> = conn.get(&key).await;
         if let Ok(json) = result {
             if let Ok(data) = serde_json::from_str::<CallSessionData>(&json) {
                 let session = CallSession::new(data);
-                self.local_cache.insert(call_id.to_string(), session.clone());
+                self.local_cache
+                    .insert(call_id.to_string(), session.clone());
                 return Some(session);
             }
         }
@@ -108,7 +123,7 @@ impl CallStore {
         let key = format!("b2bua:call:{}", call_id);
         let mut conn = self.redis.clone();
         let _: redis::RedisResult<()> = conn.del(&key).await;
-        self.early_cancelled.remove(call_id); 
+        self.early_cancelled.remove(call_id);
         self.local_cache.remove(call_id).map(|(_, s)| s)
     }
 

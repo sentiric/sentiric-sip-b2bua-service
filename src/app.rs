@@ -1,28 +1,27 @@
 // src/app.rs
 use crate::config::AppConfig;
-use crate::grpc::service::MyB2BuaService;
 use crate::grpc::client::InternalClients;
-use crate::tls::load_server_tls_config;
-use crate::sip::engine::B2BuaEngine;
-use crate::sip::store::CallStore;
-use crate::sip::server::SipServer;
+use crate::grpc::service::MyB2BuaService;
 use crate::rabbitmq::RabbitMqClient;
+use crate::sip::engine::B2BuaEngine;
+use crate::sip::server::SipServer;
+use crate::sip::store::CallStore;
 use crate::telemetry::SutsFormatter;
+use crate::tls::load_server_tls_config;
 use anyhow::{Context, Result};
-use sentiric_contracts::sentiric::sip::v1::b2bua_service_server::B2buaServiceServer;
-use std::convert::Infallible;
-use std::env;
-use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
-use tonic::transport::Server as GrpcServer; 
-use tracing::{error, info, warn};
-use tracing_subscriber::{fmt, prelude::*, EnvFilter, Registry};
 use hyper::{
     service::{make_service_fn, service_fn},
     Body, Request, Response, Server as HttpServer, StatusCode,
 };
+use sentiric_contracts::sentiric::sip::v1::b2bua_service_server::B2buaServiceServer;
 use sentiric_sip_core::SipTransport;
-
+use std::convert::Infallible;
+use std::env;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
+use tonic::transport::Server as GrpcServer;
+use tracing::{error, info, warn};
+use tracing_subscriber::{fmt, prelude::*, EnvFilter, Registry};
 
 pub struct App {
     config: Arc<AppConfig>,
@@ -32,7 +31,9 @@ async fn handle_http_request(_req: Request<Body>) -> Result<Response<Body>, Infa
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"status":"ok", "service": "sip-b2bua-service"}"#))
+        .body(Body::from(
+            r#"{"status":"ok", "service": "sip-b2bua-service"}"#,
+        ))
         .unwrap())
 }
 
@@ -43,9 +44,10 @@ impl App {
 
         // --- SUTS v4.0 LOGGING ---
         let rust_log_env = env::var("RUST_LOG").unwrap_or_else(|_| config.rust_log.clone());
-        let env_filter = EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new(&rust_log_env))?;
+        let env_filter =
+            EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new(&rust_log_env))?;
         let subscriber = Registry::default().with(env_filter);
-        
+
         if config.log_format == "json" {
             // [ARCH-COMPLIANCE] tenant_id artık config'den alınıyor
             let suts_formatter = SutsFormatter::new(
@@ -55,7 +57,9 @@ impl App {
                 config.node_hostname.clone(),
                 config.tenant_id.clone(), // YENİ
             );
-            subscriber.with(fmt::layer().event_format(suts_formatter)).init();
+            subscriber
+                .with(fmt::layer().event_format(suts_formatter))
+                .init();
         } else {
             subscriber.with(fmt::layer().compact()).init();
         }
@@ -78,21 +82,32 @@ impl App {
         // 1. ERKEN PORT BAĞLAMA (EARLY BINDING)
         let bind_addr = format!("{}:{}", self.config.sip_bind_ip, self.config.sip_port);
         info!(event="SIP_BINDING_INIT", bind=%bind_addr, "UDP Portu erkenden bağlanıyor...");
-        let transport = Arc::new(SipTransport::new(&bind_addr).await
-            .with_context(|| format!("UDP Portuna bağlanılamadı: {}", bind_addr))?);
-        info!(event="SIP_BINDING_SUCCESS", "✅ UDP Portu dinlemeye alındı.");
+        let transport = Arc::new(
+            SipTransport::new(&bind_addr)
+                .await
+                .with_context(|| format!("UDP Portuna bağlanılamadı: {}", bind_addr))?,
+        );
+        info!(
+            event = "SIP_BINDING_SUCCESS",
+            "✅ UDP Portu dinlemeye alındı."
+        );
 
         // 2. NETWORK WARMER
         let proxy_target = &self.config.proxy_sip_addr;
         match tokio::net::lookup_host(proxy_target).await {
             Ok(mut addrs) => {
                 if let Some(proxy_addr) = addrs.next() {
-                    let warmer_packet = [0u8; 4]; 
-                    let _ = transport.get_socket().send_to(&warmer_packet, proxy_addr).await;
+                    let warmer_packet = [0u8; 4];
+                    let _ = transport
+                        .get_socket()
+                        .send_to(&warmer_packet, proxy_addr)
+                        .await;
                     info!(event="NETWORK_WARMER_SENT", target=%proxy_addr, "🌐 Ağ yolu ısıtma paketi gönderildi.");
                 }
-            },
-            Err(e) => warn!(event="DNS_FAIL", host=%proxy_target, error=%e, "⚠️ Network Warmer: Proxy adresi çözülemedi.")
+            }
+            Err(e) => {
+                warn!(event="DNS_FAIL", host=%proxy_target, error=%e, "⚠️ Network Warmer: Proxy adresi çözülemedi.")
+            }
         }
 
         // 3. Clients (Lazy Connect - No Retry Loop Needed)
@@ -116,65 +131,87 @@ impl App {
 
         // 5. RabbitMQ
         info!(event="RABBITMQ_CONNECT", url=%self.config.rabbitmq_url, "RabbitMQ başlatılıyor...");
-        let rabbitmq_client = Arc::new(RabbitMqClient::new(&self.config.rabbitmq_url).await.context("RabbitMQ hatası")?);
+        let rabbitmq_client = Arc::new(
+            RabbitMqClient::new(&self.config.rabbitmq_url)
+                .await
+                .context("RabbitMQ hatası")?,
+        );
 
         // 6. Engine
         let engine = Arc::new(B2BuaEngine::new(
-            self.config.clone(), 
-            clients, 
-            calls, 
-            transport.clone(), 
-            rabbitmq_client.clone() // Clone ekledik
+            self.config.clone(),
+            clients,
+            calls,
+            transport.clone(),
+            rabbitmq_client.clone(), // Clone ekledik
         ));
 
         // [YENİ]: B2BUA Termination Consumer Başlat
-        rabbitmq_client.start_termination_consumer(engine.clone()).await;
+        rabbitmq_client
+            .start_termination_consumer(engine.clone())
+            .await;
 
         // 7. Servers
         let sip_server = SipServer::new(engine.clone(), transport);
-        let sip_handle = tokio::spawn(async move { sip_server.run(sip_shutdown_rx).await; });
+        let sip_handle = tokio::spawn(async move {
+            sip_server.run(sip_shutdown_rx).await;
+        });
 
         let grpc_config = self.config.clone();
         let grpc_server_handle = tokio::spawn(async move {
-            let tls_config = load_server_tls_config(&grpc_config).await.expect("TLS hatası");
-            let grpc_service = MyB2BuaService::new(engine); 
+            let tls_config = load_server_tls_config(&grpc_config)
+                .await
+                .expect("TLS hatası");
+            let grpc_service = MyB2BuaService::new(engine);
             GrpcServer::builder()
-                .tls_config(tls_config).expect("TLS hatası")
+                .tls_config(tls_config)
+                .expect("TLS hatası")
                 .add_service(B2buaServiceServer::new(grpc_service))
-                .serve_with_shutdown(grpc_config.grpc_listen_addr, async { shutdown_rx.recv().await; })
-                .await.context("gRPC çöktü")
+                .serve_with_shutdown(grpc_config.grpc_listen_addr, async {
+                    shutdown_rx.recv().await;
+                })
+                .await
+                .context("gRPC çöktü")
         });
 
         let http_config = self.config.clone();
         let http_server_handle = tokio::spawn(async move {
             let addr = http_config.http_listen_addr;
-            let make_svc = make_service_fn(|_conn| async { Ok::<_, Infallible>(service_fn(handle_http_request)) });
-            let server = HttpServer::bind(&addr).serve(make_svc).with_graceful_shutdown(async { http_shutdown_rx.await.ok(); });
-            if let Err(e) = server.await { 
+            let make_svc = make_service_fn(|_conn| async {
+                Ok::<_, Infallible>(service_fn(handle_http_request))
+            });
+            let server = HttpServer::bind(&addr)
+                .serve(make_svc)
+                .with_graceful_shutdown(async {
+                    http_shutdown_rx.await.ok();
+                });
+            if let Err(e) = server.await {
                 // [ARCH-COMPLIANCE] ARCH-007: Event anahtarı eklendi
-                error!(event="HTTP_SERVER_ERROR", error=%e, "HTTP hatası oluştu"); 
+                error!(event="HTTP_SERVER_ERROR", error=%e, "HTTP hatası oluştu");
             }
         });
 
-        let ctrl_c = async { tokio::signal::ctrl_c().await.expect("Ctrl+C hatası"); };
-        
+        let ctrl_c = async {
+            tokio::signal::ctrl_c().await.expect("Ctrl+C hatası");
+        };
+
         tokio::select! {
-            res = grpc_server_handle => { 
-                if let Err(e) = res? { 
+            res = grpc_server_handle => {
+                if let Err(e) = res? {
                     // [ARCH-COMPLIANCE] ARCH-007: Event anahtarı eklendi
-                    error!(event="GRPC_SERVER_CRASHED", error=%e, "gRPC Sunucusu çöktü"); 
-                } 
+                    error!(event="GRPC_SERVER_CRASHED", error=%e, "gRPC Sunucusu çöktü");
+                }
             },
-            _res = http_server_handle => {}, 
-            _res = sip_handle => {}, 
+            _res = http_server_handle => {},
+            _res = sip_handle => {},
             _ = ctrl_c => { warn!(event="SIGINT_RECEIVED", "Kapatma sinyali (Ctrl+C) alındı."); },
         }
 
         let _ = shutdown_tx.send(()).await;
         let _ = sip_shutdown_tx.send(()).await;
         let _ = http_shutdown_tx.send(());
-        
-        info!(event="SYSTEM_STOPPED", "Servis başarıyla durduruldu.");
+
+        info!(event = "SYSTEM_STOPPED", "Servis başarıyla durduruldu.");
         Ok(())
     }
 }

@@ -92,8 +92,8 @@ where
 
         let severity = match *meta.level() {
             tracing::Level::ERROR => "ERROR",
-            tracing::Level::WARN  => "WARN",
-            tracing::Level::INFO  => "INFO",
+            tracing::Level::WARN => "WARN",
+            tracing::Level::INFO => "INFO",
             tracing::Level::DEBUG => "DEBUG",
             tracing::Level::TRACE => "DEBUG",
         }
@@ -163,15 +163,18 @@ struct JsonVisitor {
 
 impl tracing::field::Visit for JsonVisitor {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
-        self.fields
-            .insert(field.name().to_string(), Value::String(format!("{:?}", value)));
+        self.fields.insert(
+            field.name().to_string(),
+            Value::String(format!("{:?}", value)),
+        );
     }
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         self.fields
             .insert(field.name().to_string(), Value::String(value.to_string()));
     }
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
-        self.fields.insert(field.name().to_string(), Value::Bool(value));
+        self.fields
+            .insert(field.name().to_string(), Value::Bool(value));
     }
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
         self.fields.insert(field.name().to_string(), json!(value));

@@ -4,14 +4,13 @@ use prost::Message;
 use sentiric_contracts::sentiric::event::v1::GenericEvent;
 
 use anyhow::Result;
-use lapin::{
-    options::*, types::FieldTable, BasicProperties,
-    Channel, Connection, ConnectionProperties,
-};
 use futures::StreamExt;
-use tracing::{info, debug, warn, error};
+use lapin::{
+    options::*, types::FieldTable, BasicProperties, Channel, Connection, ConnectionProperties,
+};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::{debug, error, info, warn};
 
 pub struct RabbitMqClient {
     // [ARCH-COMPLIANCE] constraints.yaml message_broker_reconnect kuralı:
@@ -27,7 +26,10 @@ impl RabbitMqClient {
         let connection = Self::connect_with_retry(url).await?;
         let channel = connection.create_channel().await?;
         //[ARCH-COMPLIANCE] ARCH-007
-        info!(event="MQ_CONNECTED", "✅ [MQ] RabbitMQ bağlantısı ve channel sağlandı.");
+        info!(
+            event = "MQ_CONNECTED",
+            "✅ [MQ] RabbitMQ bağlantısı ve channel sağlandı."
+        );
 
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
@@ -60,11 +62,16 @@ impl RabbitMqClient {
     // connection da ölmüşse önce connection yenilenir.
     async fn ensure_healthy_channel(&self) -> Result<()> {
         let channel = self.channel.lock().await;
-        if channel.status().connected() { return Ok(()); }
+        if channel.status().connected() {
+            return Ok(());
+        }
         drop(channel);
 
         // [ARCH-COMPLIANCE] ARCH-007
-        warn!(event="MQ_CHANNEL_DROPPED", "⚠️ [MQ] Channel koptu, yeniden oluşturuluyor...");
+        warn!(
+            event = "MQ_CHANNEL_DROPPED",
+            "⚠️ [MQ] Channel koptu, yeniden oluşturuluyor..."
+        );
 
         let conn = self.connection.lock().await;
         let new_channel = if conn.status().connected() {
@@ -72,7 +79,10 @@ impl RabbitMqClient {
         } else {
             drop(conn);
             // [ARCH-COMPLIANCE] ARCH-007
-            warn!(event="MQ_CONNECTION_DROPPED", "⚠️ [MQ] Connection da koptu, yeniden bağlanılıyor...");
+            warn!(
+                event = "MQ_CONNECTION_DROPPED",
+                "⚠️ [MQ] Connection da koptu, yeniden bağlanılıyor..."
+            );
             let new_conn = Self::connect_with_retry(&self.url).await?;
             let ch = new_conn.create_channel().await?;
             *self.connection.lock().await = new_conn;
@@ -80,7 +90,10 @@ impl RabbitMqClient {
         };
 
         *self.channel.lock().await = new_channel;
-        info!(event="MQ_CHANNEL_RESTORED", "✅ [MQ] Channel yeniden oluşturuldu.");
+        info!(
+            event = "MQ_CHANNEL_RESTORED",
+            "✅ [MQ] Channel yeniden oluşturuldu."
+        );
         Ok(())
     }
 
@@ -91,13 +104,22 @@ impl RabbitMqClient {
             if let Err(e) = self.ensure_healthy_channel().await {
                 //[ARCH-COMPLIANCE] ARCH-007
                 error!(event="MQ_CHANNEL_RECOVERY_FAILED", attempt=attempt+1, max_retries=MAX_RETRIES, error=%e, "❌ [MQ] Channel sağlıklı hale getirilemedi");
-                tokio::time::sleep(tokio::time::Duration::from_millis(200 * (attempt + 1) as u64)).await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(
+                    200 * (attempt + 1) as u64,
+                ))
+                .await;
                 continue;
             }
 
             let channel = self.channel.lock().await;
             match channel
-                .basic_publish("sentiric_events", routing_key, BasicPublishOptions::default(), payload, BasicProperties::default().with_delivery_mode(2))
+                .basic_publish(
+                    "sentiric_events",
+                    routing_key,
+                    BasicPublishOptions::default(),
+                    payload,
+                    BasicProperties::default().with_delivery_mode(2),
+                )
                 .await
             {
                 Ok(_) => {
@@ -111,12 +133,18 @@ impl RabbitMqClient {
                 Err(e) => {
                     error!(event="MQ_PUBLISH_FAILED", routing_key=%routing_key, attempt=attempt+1, max_retries=MAX_RETRIES, error=%e, "❌ [MQ] Publish başarısız");
                     if attempt < MAX_RETRIES - 1 {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100 * (attempt + 1) as u64)).await;
+                        tokio::time::sleep(tokio::time::Duration::from_millis(
+                            100 * (attempt + 1) as u64,
+                        ))
+                        .await;
                     }
                 }
             }
         }
-        anyhow::bail!("RabbitMQ publish {} denemeden sonra başarısız oldu", MAX_RETRIES)
+        anyhow::bail!(
+            "RabbitMQ publish {} denemeden sonra başarısız oldu",
+            MAX_RETRIES
+        )
     }
 
     // start_termination_consumer fonksiyonunu AŞAĞIDAKİ İLE DEĞİŞTİRİN:
@@ -136,7 +164,10 @@ impl RabbitMqClient {
             let _ = consumer_channel
                 .queue_declare(
                     queue_name,
-                    QueueDeclareOptions { durable: true, ..Default::default() },
+                    QueueDeclareOptions {
+                        durable: true,
+                        ..Default::default()
+                    },
                     FieldTable::default(),
                 )
                 .await;
@@ -162,10 +193,11 @@ impl RabbitMqClient {
                 info!("👂 [MQ] B2BUA Termination Consumer dinlemeye başladı.");
                 while let Some(delivery) = consumer.next().await {
                     if let Ok(delivery) = delivery {
-                        
                         // [ARCH-COMPLIANCE] SOP-02 Protobuf Decode Düzeltmesi!
                         if let Ok(generic_event) = GenericEvent::decode(&delivery.data[..]) {
-                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&generic_event.payload_json) {
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(
+                                &generic_event.payload_json,
+                            ) {
                                 if let Some(call_id) = json["callId"].as_str() {
                                     info!(
                                         event = "TERMINATION_REQUEST",
@@ -176,9 +208,12 @@ impl RabbitMqClient {
                                 }
                             }
                         } else {
-                            error!(event="MQ_PROTOBUF_PARSE_ERROR", "⚠️ RabbitMQ'dan gelen mesaj Protobuf olarak çözülemedi.");
+                            error!(
+                                event = "MQ_PROTOBUF_PARSE_ERROR",
+                                "⚠️ RabbitMQ'dan gelen mesaj Protobuf olarak çözülemedi."
+                            );
                         }
-                        
+
                         let _ = delivery.ack(BasicAckOptions::default()).await;
                     }
                 }
