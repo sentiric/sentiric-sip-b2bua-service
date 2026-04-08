@@ -17,13 +17,13 @@ fn main() -> Result<()> {
                     tracing::error!(event="APP_RUN_ERROR", error=%e, "Uygulama çalışırken hata oluştu.");
                     process::exit(1);
                 }
-            },
+            }
             Err(e) => {
-                // [ARCH-COMPLIANCE] ARCH-005: eprintln! kullanımı yasaktır. 
+                // [ARCH-COMPLIANCE] ARCH-005: eprintln! kullanımı yasaktır.
                 // Tracing başlatılamadığında bile SUTS formatında stdout/stderr basılmalıdır.
                 let _ = writeln!(
-                    std::io::stderr(), 
-                    "{{\"schema_v\":\"1.0.0\",\"severity\":\"FATAL\",\"event\":\"BOOTSTRAP_FAILED\",\"message\":\"{}\"}}", 
+                    std::io::stderr(),
+                    "{{\"schema_v\":\"1.0.0\",\"severity\":\"FATAL\",\"event\":\"BOOTSTRAP_FAILED\",\"message\":\"{}\"}}",
                     e
                 );
                 process::exit(1);

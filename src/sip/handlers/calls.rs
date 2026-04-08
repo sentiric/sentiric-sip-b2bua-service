@@ -46,8 +46,9 @@ impl CallHandler {
         let mut ip = String::new();
         let mut port = 0u16;
         for line in sdp_str.lines() {
-            if line.starts_with("c=IN IP4 ") {
-                ip = line[9..].trim().to_string();
+            // [CLIPPY FIX] manual_strip hatası strip_prefix ile giderildi
+            if let Some(stripped) = line.strip_prefix("c=IN IP4 ") {
+                ip = stripped.trim().to_string();
             } else if line.starts_with("m=audio ") {
                 if let Some(p_str) = line.split_whitespace().nth(1) {
                     port = p_str.parse().unwrap_or(0);

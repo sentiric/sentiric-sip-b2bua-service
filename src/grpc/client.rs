@@ -65,19 +65,31 @@ impl InternalClients {
 }
 
 async fn connect_endpoint(url: &str, tls_config: &Option<ClientTlsConfig>) -> Result<Channel> {
-    let uri = url
+    // [ARCH-COMPLIANCE] 1. URL HTTPS Zorlaması ve Düzeltmesi
+    let target_url = if url.starts_with("http://") {
+        warn!(event="INSECURE_URL_FIXED", url=%url, "⚠️ Güvensiz URL tespit edildi, HTTPS'e zorlanıyor.");
+        url.replace("http://", "https://")
+    } else if !url.starts_with("http") {
+        format!("https://{}", url)
+    } else {
+        url.to_string()
+    };
+
+    let uri = target_url
         .parse::<tonic::transport::Uri>()
-        .with_context(|| format!("Geçersiz URL: {}", url))?;
+        .with_context(|| format!("Geçersiz URL: {}", target_url))?;
 
     let mut endpoint = Endpoint::from(uri);
 
-    if url.starts_with("https") {
-        if let Some(tls) = tls_config {
-            endpoint = endpoint.tls_config(tls.clone())?;
-        } else {
-            //[ARCH-COMPLIANCE] ARCH-007
-            warn!(event="TLS_CONFIG_MISSING", target_url=%url, "HTTPS URL için TLS konfigürasyonu bulunamadı");
-        }
+    // [ARCH-COMPLIANCE] 2. Strict TLS Uygulaması (mTLS Zorunluluğu)
+    if let Some(tls) = tls_config {
+        endpoint = endpoint.tls_config(tls.clone())?;
+    } else {
+        // MİMARİ KURAL: TLS yoksa panic/bail olmalı, güvensiz modda (plaintext) devam edemez!
+        anyhow::bail!(
+            "[ARCH-COMPLIANCE] mTLS konfigürasyonu eksik, güvensiz bağlantı kurulamaz: {}",
+            target_url
+        );
     }
 
     Ok(endpoint.connect_lazy())

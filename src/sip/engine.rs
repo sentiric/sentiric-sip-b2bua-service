@@ -74,7 +74,7 @@ impl B2BuaEngine {
                 debug!(event="SIP_RETRANSMIT", sip.call_id=%call_id, "Tekrar eden paket");
                 let _ = self.transport.send(&cached_resp.to_bytes(), src_addr).await;
             }
-            TransactionAction::Ignore => return,
+            TransactionAction::Ignore => (), // [CLIPPY FIX] return yerine Unit Value () kullanıldı
             TransactionAction::ForwardToApp => {
                 if packet.is_request() {
                     // [ARCH-COMPLIANCE] Non-exhaustive match hatası düzeltildi.
