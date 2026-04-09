@@ -42,6 +42,9 @@ pub struct AppConfig {
 
     /// Tenant kimliği — zorunlu, boş olamaz
     pub tenant_id: String,
+
+    // [YENİ EKLENEN]
+    pub preferred_audio_codec: String,
 }
 
 impl AppConfig {
@@ -78,6 +81,10 @@ impl AppConfig {
         if tenant_id.is_empty() {
             anyhow::bail!("[ARCH-COMPLIANCE] TENANT_ID boş olamaz");
         }
+
+        // [YENİ EKLENEN] Codec tercihini oku, yoksa PCMA'ya zorla
+        let preferred_audio_codec =
+            std::env::var("PREFERRED_AUDIO_CODEC").unwrap_or_else(|_| "PCMA".to_string());
 
         Ok(AppConfig {
             grpc_listen_addr: grpc_addr,
@@ -116,6 +123,7 @@ impl AppConfig {
             ca_path: env::var("GRPC_TLS_CA_PATH").context("CA PATH")?,
 
             tenant_id,
+            preferred_audio_codec,
         })
     }
 }

@@ -114,19 +114,27 @@ impl MediaManager {
     }
 
     pub fn generate_sdp(&self, rtp_port: u32) -> Vec<u8> {
+        use sentiric_rtp_core::AudioProfile;
+        use sentiric_sip_core::sdp::SdpBuilder;
+
         let profile = AudioProfile::default();
         let mut builder = SdpBuilder::new(self.config.public_ip.clone(), rtp_port as u16)
             .with_ptime(profile.ptime)
             .with_rtcp(false);
 
+        let preferred = self.config.preferred_audio_codec.to_uppercase();
+
         for codec_conf in profile.codecs {
-            // [CLIPPY FIX] codec_conf.fmtp.as_deref() yerine doğrudan .fmtp kullanıldı
-            builder = builder.add_codec(
-                codec_conf.payload_type,
-                codec_conf.name,
-                codec_conf.rate,
-                codec_conf.fmtp,
-            );
+            // [ARCH-COMPLIANCE] Sadece Compose dosyasından dikte edilen kodeği (PCMA) SDP'ye ekle.
+            // Bu sayede Baresip, G.729 veya Opus seçemeyecek ve zorunlu olarak desteklediğimiz formata inecektir.
+            if codec_conf.name.to_uppercase() == preferred {
+                builder = builder.add_codec(
+                    codec_conf.payload_type,
+                    codec_conf.name,
+                    codec_conf.rate,
+                    codec_conf.fmtp,
+                );
+            }
         }
         builder.build().as_bytes().to_vec()
     }
