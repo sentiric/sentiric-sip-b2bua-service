@@ -4,8 +4,6 @@ use crate::grpc::client::InternalClients;
 use sentiric_contracts::sentiric::media::v1::{
     AllocatePortRequest, PlayAudioRequest, ReleasePortRequest,
 };
-use sentiric_rtp_core::AudioProfile;
-use sentiric_sip_core::sdp::SdpBuilder;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -114,19 +112,16 @@ impl MediaManager {
     }
 
     pub fn generate_sdp(&self, rtp_port: u32) -> Vec<u8> {
-        use sentiric_rtp_core::AudioProfile;
-        use sentiric_sip_core::sdp::SdpBuilder;
-
-        let profile = AudioProfile::default();
-        let mut builder = SdpBuilder::new(self.config.public_ip.clone(), rtp_port as u16)
-            .with_ptime(profile.ptime)
-            .with_rtcp(false);
+        // [ARCH-COMPLIANCE] Unused import hatasını önlemek için namespace'leri içerde çağırdık
+        let profile = sentiric_rtp_core::AudioProfile::default();
+        let mut builder =
+            sentiric_sip_core::sdp::SdpBuilder::new(self.config.public_ip.clone(), rtp_port as u16)
+                .with_ptime(profile.ptime)
+                .with_rtcp(false);
 
         let preferred = self.config.preferred_audio_codec.to_uppercase();
 
         for codec_conf in profile.codecs {
-            // [ARCH-COMPLIANCE] Sadece Compose dosyasından dikte edilen kodeği (PCMA) SDP'ye ekle.
-            // Bu sayede Baresip, G.729 veya Opus seçemeyecek ve zorunlu olarak desteklediğimiz formata inecektir.
             if codec_conf.name.to_uppercase() == preferred {
                 builder = builder.add_codec(
                     codec_conf.payload_type,
