@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tonic::Request;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct CallHandler {
     config: Arc<AppConfig>,
@@ -118,11 +118,14 @@ impl CallHandler {
                 dp_req.metadata_mut().insert("x-trace-id", val);
             }
 
-            info!(event="GRPC_OUT_ATTEMPT", grpc.target="dialplan-service", attempt=attempt, sip.call_id=%call_id, "📡 Dialplan'a danışılıyor...");
+            // [ARCH-COMPLIANCE] SUTS v4.2: Dış gRPC çağrısı denemeleri DEBUG'a çekildi.
+            // Sadece başarı (SUCCESS) veya kesin hata (FATAL) INFO olarak kalmalı.
+            debug!(event="GRPC_OUT_ATTEMPT", grpc.target="dialplan-service", attempt=attempt, sip.call_id=%call_id, "📡 Dialplan'a danışılıyor...");
 
             match dialplan_client.resolve_dialplan(dp_req).await {
                 Ok(res) => {
-                    info!(
+                    // [ARCH-COMPLIANCE] info! -> debug!
+                    debug!(
                         event = "GRPC_OUT_SUCCESS",
                         grpc.target = "dialplan-service",
                         attempt = attempt,
