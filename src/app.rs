@@ -49,13 +49,12 @@ impl App {
         let subscriber = Registry::default().with(env_filter);
 
         if config.log_format == "json" {
-            // [ARCH-COMPLIANCE] tenant_id artık config'den alınıyor
             let suts_formatter = SutsFormatter::new(
                 "sip-b2bua-service".to_string(),
                 config.service_version.clone(),
                 config.env.clone(),
                 config.node_hostname.clone(),
-                config.tenant_id.clone(), // YENİ
+                config.tenant_id.clone(),
             );
             subscriber
                 .with(fmt::layer().event_format(suts_formatter))
@@ -111,25 +110,35 @@ impl App {
         }
 
         // 3. Clients (Lazy Connect - No Retry Loop Needed)
-        // [DÜZELTME]: Retry döngüsü kaldırıldı, connect_lazy kullanılıyor.
+        // [ARCH-COMPLIANCE FIX]: gRPC bağlantıları Lazy'dir. Karşı taraf kapalı olsa bile çökmek yasaktır.
         let clients = Arc::new(Mutex::new(
             InternalClients::connect(&self.config)
                 .await
                 .context("gRPC istemcileri yapılandırılamadı")?,
         ));
 
-        // 4. Redis
+        // 4. Redis (Auto-Healing Connection Manager)
+        // [ARCH-COMPLIANCE FIX]: Redis kapalı diye servisi öldüremeyiz!
+        // Sonsuz loop içinde 5 saniye bekleyerek Redis'in ayağa kalkmasını bekleriz.
         info!(event="REDIS_CONNECT", url=%self.config.redis_url, "Redis başlatılıyor...");
-        // Auto-healing ConnectionManager call store içinde
-        let calls = match CallStore::new(&self.config.redis_url).await {
-            Ok(c) => c,
-            Err(e) => {
-                error!(event="REDIS_ERROR", error=%e, "Kritik: Redis bağlantısı başarısız.");
-                return Err(e);
+        let mut redis_attempt = 0;
+        let calls = loop {
+            redis_attempt += 1;
+            match CallStore::new(&self.config.redis_url).await {
+                Ok(c) => break c,
+                Err(e) => {
+                    error!(
+                        event = "REDIS_ERROR",
+                        attempt = redis_attempt,
+                        error = %e,
+                        "Kritik: Redis bağlantısı başarısız. 5 saniye sonra tekrar denenecek (Ghost Mode)..."
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
             }
         };
 
-        // 5. RabbitMQ
+        // 5. RabbitMQ (RabbitMqClient kendi içinde retry yapar)
         info!(event="RABBITMQ_CONNECT", url=%self.config.rabbitmq_url, "RabbitMQ başlatılıyor...");
         let rabbitmq_client = Arc::new(
             RabbitMqClient::new(&self.config.rabbitmq_url)
@@ -143,7 +152,7 @@ impl App {
             clients,
             calls,
             transport.clone(),
-            rabbitmq_client.clone(), // Clone ekledik
+            rabbitmq_client.clone(),
         ));
 
         // [YENİ]: B2BUA Termination Consumer Başlat
@@ -186,7 +195,6 @@ impl App {
                     http_shutdown_rx.await.ok();
                 });
             if let Err(e) = server.await {
-                // [ARCH-COMPLIANCE] ARCH-007: Event anahtarı eklendi
                 error!(event="HTTP_SERVER_ERROR", error=%e, "HTTP hatası oluştu");
             }
         });
@@ -198,7 +206,6 @@ impl App {
         tokio::select! {
             res = grpc_server_handle => {
                 if let Err(e) = res? {
-                    // [ARCH-COMPLIANCE] ARCH-007: Event anahtarı eklendi
                     error!(event="GRPC_SERVER_CRASHED", error=%e, "gRPC Sunucusu çöktü");
                 }
             },
