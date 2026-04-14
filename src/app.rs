@@ -119,13 +119,9 @@ impl App {
         info!(event="REDIS_CONNECT", url=%self.config.redis_url, "CallStore başlatılıyor...");
         let calls = CallStore::new(&self.config.redis_url).await;
 
-        // 5. RabbitMQ (RabbitMqClient kendi içinde retry yapar, threadi kitlemez)
+        // 5. RabbitMQ (Artık anında döner, ana threadi kitlemez)
         info!(event="RABBITMQ_CONNECT", url=%self.config.rabbitmq_url, "RabbitMQ başlatılıyor...");
-        let rabbitmq_client = Arc::new(
-            RabbitMqClient::new(&self.config.rabbitmq_url)
-                .await
-                .context("RabbitMQ hatası")?,
-        );
+        let rabbitmq_client = Arc::new(RabbitMqClient::new(&self.config.rabbitmq_url).await);
 
         // 6. Engine
         let engine = Arc::new(B2BuaEngine::new(
