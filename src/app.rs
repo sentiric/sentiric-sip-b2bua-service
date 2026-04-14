@@ -42,7 +42,6 @@ impl App {
         dotenvy::dotenv().ok();
         let config = Arc::new(AppConfig::load_from_env().context("Konfigürasyon yüklenemedi")?);
 
-        // --- SUTS v4.0 LOGGING ---
         let rust_log_env = env::var("RUST_LOG").unwrap_or_else(|_| config.rust_log.clone());
         let env_filter =
             EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new(&rust_log_env))?;
@@ -78,7 +77,7 @@ impl App {
         let (sip_shutdown_tx, sip_shutdown_rx) = mpsc::channel(1);
         let (http_shutdown_tx, http_shutdown_rx) = tokio::sync::oneshot::channel();
 
-        // 1. ERKEN PORT BAĞLAMA (EARLY BINDING)
+        // 1. ERKEN PORT BAĞLAMA (EARLY BINDING) - ANINDA AÇILIR
         let bind_addr = format!("{}:{}", self.config.sip_bind_ip, self.config.sip_port);
         info!(event="SIP_BINDING_INIT", bind=%bind_addr, "UDP Portu erkenden bağlanıyor...");
         let transport = Arc::new(
@@ -109,48 +108,18 @@ impl App {
             }
         }
 
-        // 3. Clients (Lazy Connect - No Retry Loop Needed)
-        // [ARCH-COMPLIANCE FIX]: gRPC bağlantıları Lazy'dir. Karşı taraf kapalı olsa bile çökmek yasaktır.
+        // 3. Clients (Lazy Connect)
         let clients = Arc::new(Mutex::new(
             InternalClients::connect(&self.config)
                 .await
                 .context("gRPC istemcileri yapılandırılamadı")?,
         ));
 
-        // 4. Redis (Auto-Healing Connection Manager / Ghost Mode)
-        info!(event="REDIS_CONNECT", url=%self.config.redis_url, "Redis başlatılıyor...");
+        // 4. Call Store (Redis otonom arka planda bağlanır, L1 RAM anında hazır)
+        info!(event="REDIS_CONNECT", url=%self.config.redis_url, "CallStore başlatılıyor...");
+        let calls = CallStore::new(&self.config.redis_url).await;
 
-        let mut redis_attempt = 0;
-        let calls = loop {
-            redis_attempt += 1;
-            match CallStore::new(&self.config.redis_url).await {
-                Ok(c) => {
-                    if redis_attempt > 1 {
-                        info!(event = "REDIS_RECOVERED", "✅ Redis bağlantısı sağlandı.");
-                    }
-                    break c;
-                }
-                Err(e) => {
-                    // [ARCH-COMPLIANCE FIX] SUTS v4.2: İlk hata ERROR, sonrakiler DEBUG
-                    if redis_attempt == 1 {
-                        error!(
-                            event = "REDIS_ERROR",
-                            error = %e,
-                            "Kritik: Redis bağlantısı başarısız. Arka planda sessizce beklenecek..."
-                        );
-                    } else {
-                        tracing::debug!(
-                            event = "REDIS_RETRY",
-                            attempt = redis_attempt,
-                            "Redis bekleniyor..."
-                        );
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                }
-            }
-        };
-
-        // 5. RabbitMQ (RabbitMqClient kendi içinde retry yapar)
+        // 5. RabbitMQ (RabbitMqClient kendi içinde retry yapar, threadi kitlemez)
         info!(event="RABBITMQ_CONNECT", url=%self.config.rabbitmq_url, "RabbitMQ başlatılıyor...");
         let rabbitmq_client = Arc::new(
             RabbitMqClient::new(&self.config.rabbitmq_url)
@@ -167,7 +136,6 @@ impl App {
             rabbitmq_client.clone(),
         ));
 
-        // [YENİ]: B2BUA Termination Consumer Başlat
         rabbitmq_client
             .start_termination_consumer(engine.clone())
             .await;
@@ -223,7 +191,7 @@ impl App {
             },
             _res = http_server_handle => {},
             _res = sip_handle => {},
-            _ = ctrl_c => { warn!(event="SIGINT_RECEIVED", "Kapatma sinyali (Ctrl+C) alındı."); },
+            _ = ctrl_c => { warn!(event="SIGINT_RECEIVED", "Kapatma sinyali alındı."); },
         }
 
         let _ = shutdown_tx.send(()).await;
