@@ -117,22 +117,30 @@ impl App {
                 .context("gRPC istemcileri yapılandırılamadı")?,
         ));
 
-        // 4. Redis (Auto-Healing Connection Manager)
-        // [ARCH-COMPLIANCE FIX]: Redis kapalı diye servisi öldüremeyiz!
-        // Sonsuz loop içinde 5 saniye bekleyerek Redis'in ayağa kalkmasını bekleriz.
+        // 4. Redis (Auto-Healing Connection Manager / Ghost Mode)
         info!(event="REDIS_CONNECT", url=%self.config.redis_url, "Redis başlatılıyor...");
+        
         let mut redis_attempt = 0;
         let calls = loop {
             redis_attempt += 1;
             match CallStore::new(&self.config.redis_url).await {
-                Ok(c) => break c,
+                Ok(c) => {
+                    if redis_attempt > 1 {
+                        info!(event="REDIS_RECOVERED", "✅ Redis bağlantısı sağlandı.");
+                    }
+                    break c;
+                },
                 Err(e) => {
-                    error!(
-                        event = "REDIS_ERROR",
-                        attempt = redis_attempt,
-                        error = %e,
-                        "Kritik: Redis bağlantısı başarısız. 5 saniye sonra tekrar denenecek (Ghost Mode)..."
-                    );
+                    // [ARCH-COMPLIANCE FIX] SUTS v4.2: İlk hata ERROR, sonrakiler DEBUG
+                    if redis_attempt == 1 {
+                        error!(
+                            event = "REDIS_ERROR", 
+                            error = %e, 
+                            "Kritik: Redis bağlantısı başarısız. Arka planda sessizce beklenecek..."
+                        );
+                    } else {
+                        tracing::debug!(event="REDIS_RETRY", attempt=redis_attempt, "Redis bekleniyor...");
+                    }
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
             }
