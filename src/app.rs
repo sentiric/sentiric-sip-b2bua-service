@@ -119,27 +119,31 @@ impl App {
 
         // 4. Redis (Auto-Healing Connection Manager / Ghost Mode)
         info!(event="REDIS_CONNECT", url=%self.config.redis_url, "Redis başlatılıyor...");
-        
+
         let mut redis_attempt = 0;
         let calls = loop {
             redis_attempt += 1;
             match CallStore::new(&self.config.redis_url).await {
                 Ok(c) => {
                     if redis_attempt > 1 {
-                        info!(event="REDIS_RECOVERED", "✅ Redis bağlantısı sağlandı.");
+                        info!(event = "REDIS_RECOVERED", "✅ Redis bağlantısı sağlandı.");
                     }
                     break c;
-                },
+                }
                 Err(e) => {
                     // [ARCH-COMPLIANCE FIX] SUTS v4.2: İlk hata ERROR, sonrakiler DEBUG
                     if redis_attempt == 1 {
                         error!(
-                            event = "REDIS_ERROR", 
-                            error = %e, 
+                            event = "REDIS_ERROR",
+                            error = %e,
                             "Kritik: Redis bağlantısı başarısız. Arka planda sessizce beklenecek..."
                         );
                     } else {
-                        tracing::debug!(event="REDIS_RETRY", attempt=redis_attempt, "Redis bekleniyor...");
+                        tracing::debug!(
+                            event = "REDIS_RETRY",
+                            attempt = redis_attempt,
+                            "Redis bekleniyor..."
+                        );
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
